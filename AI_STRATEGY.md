@@ -20,6 +20,31 @@ acceptance stay human. Three habits structure the collaboration:
 
 Newest first. Only load-bearing interactions — routine completions are not logged.
 
+### 2026-08-03 — Notification inside the transaction: cost observed live (accepted for now)
+The transfer flow calls the notifier inside the database transaction, and the
+very first live end-to-end run put a price on that: the public notifier
+answered `504`, the exception unwound the transaction, and the client got `502`
+with both balances untouched and an auto-increment gap left behind. Keeping the
+simple placement was a reviewed decision, not an oversight — it buys a strong
+guarantee (no committed transfer without an attempted notification, no
+notification for an uncommitted transfer) at the price of coupling the API's
+availability to a third party. The observed cost is on record here so the
+trade-off gets revisited with evidence instead of opinion.
+
+### 2026-08-03 — Runtime test-double binding (rejected, with the mechanism)
+An earlier attempt bound test fakes by mutating the DI container at runtime and
+flaked unpredictably. The mechanism, found while designing the test strategy
+for this feature: Hyperf's testing harness builds a **new** container per test
+and swaps the global `ApplicationContext` in `setUp`, so any binding made at
+runtime is discarded with the previous container, and anything
+container-derived that was captured before `setUp` — an HTTP test client built
+in a constructor, for instance — keeps talking to a stale one. The accepted
+approach follows from that: override the two external ports (authorizer,
+notifier) through configuration when `APP_ENV=testing`, keep real MySQL
+persistence in feature tests, and construct the client inside each test.
+Recorded as a rejection because the symptom was flakiness but the lesson is the
+lifecycle.
+
 ### 2026-08-02 — Development workflow vendored before implementation (accepted, human-directed)
 A first implementation of the transfer feature was started ad hoc and
 deliberately set aside: without a spec, independent verification, and decision
