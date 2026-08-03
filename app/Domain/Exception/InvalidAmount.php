@@ -10,18 +10,8 @@ declare(strict_types=1);
  * @license  https://github.com/hyperf/hyperf/blob/master/LICENSE
  */
 
-namespace HyperfTest\Cases;
+namespace App\Domain\Exception;
 
-use Hyperf\Testing\TestCase;
-
-/**
- * @internal
- * @coversNothing
- */
-class ExampleTest extends TestCase
+final class InvalidAmount extends DomainException
 {
-    public function testExample()
-    {
-        $this->get('/')->assertOk()->assertSee('Hyperf');
-    }
 }
