@@ -11,13 +11,14 @@ declare(strict_types=1);
  */
 use Hyperf\Contract\ApplicationInterface;
 use Hyperf\Di\ClassLoader;
+use Hyperf\Di\ScanHandler\ProcScanHandler;
 use Hyperf\Engine\DefaultOption;
 
 ini_set('display_errors', 'on');
 ini_set('display_startup_errors', 'on');
 
 error_reporting(E_ALL);
-date_default_timezone_set('Asia/Shanghai');
+date_default_timezone_set('UTC');
 
 ! defined('BASE_PATH') && define('BASE_PATH', dirname(__DIR__, 1));
 
@@ -25,7 +26,7 @@ require BASE_PATH . '/vendor/autoload.php';
 
 ! defined('SWOOLE_HOOK_FLAGS') && define('SWOOLE_HOOK_FLAGS', DefaultOption::hookFlags());
 
-ClassLoader::init();
+ClassLoader::init(handler: new ProcScanHandler());
 
 $container = require BASE_PATH . '/config/container.php';
 
