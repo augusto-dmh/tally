@@ -15,7 +15,6 @@ namespace App\Controller;
 use App\Application\TransferFunds;
 use App\Application\TransferFundsInput;
 use App\Domain\Money;
-use DateTimeInterface;
 use Psr\Http\Message\ResponseInterface;
 
 /**
@@ -53,17 +52,49 @@ class TransferController extends AbstractController
             return $this->unusable('The value must be given as an amount in reais.');
         }
 
-        $transfer = $this->transferFunds->execute(
-            new TransferFundsInput($payer, $payee, Money::fromDecimalString((string) $value))
+        $idempotencyKey = $this->idempotencyKeyFromHeader();
+        if ($idempotencyKey === false) {
+            return $this->unusable('The Idempotency-Key header must not be empty.');
+        }
+
+        $amount = Money::fromDecimalString((string) $value);
+        $requestHash = $idempotencyKey === null
+            ? null
+            : $this->requestHash($payer, $payee, $amount);
+
+        $result = $this->transferFunds->execute(
+            new TransferFundsInput($payer, $payee, $amount, $idempotencyKey, $requestHash)
         );
 
-        return $this->response->json([
-            'id' => $transfer->id,
-            'payer' => $transfer->payerId,
-            'payee' => $transfer->payeeId,
-            'value' => $this->reais($transfer->amount),
-            'created_at' => $transfer->createdAt->format(DateTimeInterface::ATOM),
-        ])->withStatus(201);
+        return $this->response->json($result->body)->withStatus($result->statusCode);
+    }
+
+    /**
+     * @return string|null|false null when absent; false when present but empty/whitespace
+     */
+    private function idempotencyKeyFromHeader(): string|null|false
+    {
+        if (! $this->request->hasHeader('Idempotency-Key')) {
+            return null;
+        }
+
+        $key = trim($this->request->getHeaderLine('Idempotency-Key'));
+        if ($key === '') {
+            return false;
+        }
+
+        return $key;
+    }
+
+    private function requestHash(int $payer, int $payee, Money $amount): string
+    {
+        $value = sprintf('%d.%02d', intdiv($amount->cents(), 100), $amount->cents() % 100);
+        $canonical = json_encode(
+            ['payee' => $payee, 'payer' => $payer, 'value' => $value],
+            JSON_THROW_ON_ERROR
+        );
+
+        return hash('sha256', $canonical);
     }
 
     private function unusable(string $message): ResponseInterface
@@ -72,14 +103,5 @@ class TransferController extends AbstractController
             'error' => 'invalid_request',
             'message' => $message,
         ])->withStatus(422);
-    }
-
-    /**
-     * Cents back to the decimal reais the caller sent, by integer arithmetic:
-     * the amount never becomes a float on the way out either.
-     */
-    private function reais(Money $amount): string
-    {
-        return sprintf('%d.%02d', intdiv($amount->cents(), 100), $amount->cents() % 100);
     }
 }
