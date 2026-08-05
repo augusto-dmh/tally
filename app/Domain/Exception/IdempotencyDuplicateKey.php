@@ -10,12 +10,12 @@ declare(strict_types=1);
  * @license  https://github.com/hyperf/hyperf/blob/master/LICENSE
  */
 
-namespace App\Infrastructure\Persistence;
+namespace App\Domain\Exception;
 
 use RuntimeException;
 
 /**
- * Catchable signal that an idempotency_keys insert lost a unique-key race.
+ * Catchable signal that an idempotency key insert lost a unique-key race.
  * The use case re-reads the winner's stored outcome and replays it.
  */
 final class IdempotencyDuplicateKey extends RuntimeException

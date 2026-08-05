@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Persistence;
 
+use App\Domain\Exception\IdempotencyDuplicateKey;
 use App\Domain\Exception\IdempotencyKeyConflict;
 use App\Domain\IdempotencyRecord;
 use App\Domain\Port\IdempotencyStore;

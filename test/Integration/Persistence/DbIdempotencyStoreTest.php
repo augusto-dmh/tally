@@ -12,10 +12,10 @@ declare(strict_types=1);
 
 namespace HyperfTest\Integration\Persistence;
 
+use App\Domain\Exception\IdempotencyDuplicateKey;
 use App\Domain\Exception\IdempotencyKeyConflict;
 use App\Domain\IdempotencyRecord;
 use App\Infrastructure\Persistence\DbIdempotencyStore;
-use App\Infrastructure\Persistence\IdempotencyDuplicateKey;
 use DateTimeImmutable;
 use Hyperf\DbConnection\Db;
 use HyperfTest\Integration\IntegrationTestCase;
