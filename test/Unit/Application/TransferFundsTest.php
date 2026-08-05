@@ -405,6 +405,76 @@ class TransferFundsTest extends TestCase
         $this->assertSame([], $this->transfers->added);
     }
 
+    /** Keyed insufficient-balance stores a terminal 422 for replay. */
+    public function testItStoresAKeyedInsufficientBalanceAndReplaysIt(): void
+    {
+        $first = $this->transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(10051),
+            'key-422',
+            'hash-422',
+        ));
+
+        $this->assertSame(422, $first->statusCode);
+        $this->assertSame('insufficient_balance', $first->body['error']);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame([], $this->authorizer->authorized);
+        $this->assertSame(0, $this->runner->runs);
+
+        $second = $this->transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(10051),
+            'key-422',
+            'hash-422',
+        ));
+
+        $this->assertSame(422, $second->statusCode);
+        $this->assertSame($first->body, $second->body);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame([], $this->authorizer->authorized);
+        $this->assertSame([], $this->notifier->notified);
+        $this->assertSame(0, $this->runner->runs);
+    }
+
+    /** Keyed user-not-found stores a terminal 404 for replay. */
+    public function testItStoresAKeyedUserNotFoundAndReplaysIt(): void
+    {
+        $first = $this->transferFunds->execute(new TransferFundsInput(
+            99,
+            2,
+            Money::fromCents(2550),
+            'key-404',
+            'hash-404',
+        ));
+
+        $this->assertSame(404, $first->statusCode);
+        $this->assertSame('user_not_found', $first->body['error']);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame([], $this->authorizer->authorized);
+        $this->assertSame(0, $this->runner->runs);
+
+        $second = $this->transferFunds->execute(new TransferFundsInput(
+            99,
+            2,
+            Money::fromCents(2550),
+            'key-404',
+            'hash-404',
+        ));
+
+        $this->assertSame(404, $second->statusCode);
+        $this->assertSame($first->body, $second->body);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame([], $this->authorizer->authorized);
+        $this->assertSame([], $this->notifier->notified);
+        $this->assertSame(0, $this->runner->runs);
+    }
+
     /** CONC-07: without a key each request is independent. */
     public function testItTreatsRequestsWithoutAnIdempotencyKeyAsIndependent(): void
     {
