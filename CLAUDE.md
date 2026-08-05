@@ -10,9 +10,10 @@ measurements rather than asserted.
 ## Working in This Repo (Operational)
 
 - Composer scripts are the verification contract: `composer test`,
-  `composer analyse`, `composer cs-fix`. Reference script names in docs and
-  agent briefs; never inline the underlying commands. A Makefile and CI take
-  over as the contract when the work brings a real reason.
+  `composer analyse`, `composer cs-fix`. Makefile gates (`make gate-quick`,
+  `make gate-integration`, `make gate-full`) wrap those scripts for local and
+  CI use — reference the Makefile target or Composer script name in docs and
+  agent briefs; never inline the underlying commands.
 - Everything runs inside the `hyperf/hyperf:8.3-alpine-v3.19-swoole` container
   (Compose: app + mysql). Run one-off containers as the host user
   (`-u 1000:1000`) — files created as root inside the container are unwritable
