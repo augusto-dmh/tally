@@ -25,11 +25,21 @@ final class FakeWalletRepository implements WalletRepository
     /** @var array<int, Wallet> */
     public array $walletsByUserId = [];
 
+    /** @var list<int> User ids read via findByUserIdForUpdate, in call order. */
+    public array $forUpdateUserIds = [];
+
     public function findByUserId(int $userId): ?Wallet
     {
         $stored = $this->walletsByUserId[$userId] ?? null;
 
         return $stored === null ? null : $this->copyOf($stored);
+    }
+
+    public function findByUserIdForUpdate(int $userId): ?Wallet
+    {
+        $this->forUpdateUserIds[] = $userId;
+
+        return $this->findByUserId($userId);
     }
 
     public function save(Wallet $wallet): void
