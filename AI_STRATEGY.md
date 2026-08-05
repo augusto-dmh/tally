@@ -20,6 +20,17 @@ acceptance stay human. Three habits structure the collaboration:
 
 Newest first. Only load-bearing interactions — routine completions are not logged.
 
+### 2026-08-04 — Post-commit best-effort notify (accepted; supersedes in-txn placement)
+The 2026-08-03 live cost of notifying inside the money transaction (public
+notifier `504` → client `502`, transfer rolled back, connection held across
+HTTP) motivated moving notify to **after commit**. A committed transfer now
+answers `201` with the normal body even when the notifier fails; notification
+is best-effort until an outbox/retry path exists. The stronger “no commit
+without an attempted notify” guarantee is deliberately dropped in favor of not
+coupling ledger durability or API availability to a third party. Recorded as an
+acceptance with an explicit deferred reliability gap, not as silence over the
+earlier trade-off.
+
 ### 2026-08-03 — Notification inside the transaction: cost observed live (accepted for now)
 The transfer flow calls the notifier inside the database transaction, and the
 very first live end-to-end run put a price on that: the public notifier
@@ -29,7 +40,9 @@ simple placement was a reviewed decision, not an oversight — it buys a strong
 guarantee (no committed transfer without an attempted notification, no
 notification for an uncommitted transfer) at the price of coupling the API's
 availability to a third party. The observed cost is on record here so the
-trade-off gets revisited with evidence instead of opinion.
+trade-off gets revisited with evidence instead of opinion. Superseded for
+current behavior by the 2026-08-04 post-commit entry above; retained as the
+evidence that motivated the change.
 
 ### 2026-08-03 — Runtime test-double binding (rejected, with the mechanism)
 An earlier attempt bound test fakes by mutating the DI container at runtime and
