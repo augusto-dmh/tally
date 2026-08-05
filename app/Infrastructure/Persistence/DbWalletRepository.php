@@ -34,11 +34,19 @@ final class DbWalletRepository implements WalletRepository
         );
     }
 
-    // SPEC_DEVIATION: unlocked stub so the port change compiles under DI scan.
-    // Reason: lockForUpdate() lands with the T4 adapter task; callers do not use this yet.
     public function findByUserIdForUpdate(int $userId): ?Wallet
     {
-        return $this->findByUserId($userId);
+        $row = Db::table('wallets')->where('user_id', $userId)->lockForUpdate()->first();
+
+        if ($row === null) {
+            return null;
+        }
+
+        return new Wallet(
+            (int) $row->id,
+            (int) $row->user_id,
+            Money::fromCents((int) $row->balance_cents),
+        );
     }
 
     /**
