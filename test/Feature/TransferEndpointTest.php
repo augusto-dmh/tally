@@ -61,6 +61,7 @@ final class TransferEndpointTest extends HttpTestCase
         Db::table('transfers')->delete();
         Db::table('wallets')->delete();
         Db::table('users')->delete();
+        Db::table('idempotency_keys')->delete();
 
         $this->insertUser(self::PAYER, 'Alice Ramos', '11111111111', 'alice@tally.test', 'common');
         $this->insertUser(self::PAYEE, 'Bruno Teixeira', '22222222222', 'bruno@tally.test', 'common');
@@ -211,14 +212,94 @@ final class TransferEndpointTest extends HttpTestCase
         $this->assertCount(0, $this->notifier()->notified);
     }
 
-    public function testUndoesTheWholeTransferWhenThePayeeCannotBeNotified(): void
+    public function testKeepsTheTransferWhenThePayeeCannotBeNotified(): void
     {
         $this->notifier()->fails = true;
 
         $response = $this->postTransfer(['value' => 10.00, 'payer' => self::PAYER, 'payee' => self::PAYEE]);
 
-        $this->assertRejected($response, 502, 'notification_failed');
+        $this->assertSame(201, $response->getStatusCode());
+        $body = $this->bodyOf($response);
+        $this->assertSame(self::PAYER, $body['payer']);
+        $this->assertSame(self::PAYEE, $body['payee']);
+        $this->assertSame('10.00', $body['value']);
+        $this->assertSame(self::PAYER_BALANCE - 1000, $this->balanceOf(self::PAYER));
+        $this->assertSame(self::PAYEE_BALANCE + 1000, $this->balanceOf(self::PAYEE));
+        $this->assertSame(1, Db::table('transfers')->count());
         $this->assertCount(1, $this->notifier()->notified);
+    }
+
+    /** CONC-05: same Idempotency-Key + body returns the stored outcome once. */
+    public function testReplaysAnIdenticalTransferUnderTheSameIdempotencyKey(): void
+    {
+        $payload = ['value' => 10.00, 'payer' => self::PAYER, 'payee' => self::PAYEE];
+        $headers = ['Idempotency-Key' => 'demo-key-1'];
+
+        $first = $this->postTransfer($payload, $headers);
+        $second = $this->postTransfer($payload, $headers);
+
+        $this->assertSame(201, $first->getStatusCode());
+        $this->assertSame(201, $second->getStatusCode());
+        $firstBody = $this->bodyOf($first);
+        $secondBody = $this->bodyOf($second);
+        $this->assertSame($firstBody['id'], $secondBody['id']);
+        $this->assertSame($firstBody['payer'], $secondBody['payer']);
+        $this->assertSame($firstBody['payee'], $secondBody['payee']);
+        $this->assertSame($firstBody['value'], $secondBody['value']);
+        $this->assertSame($firstBody['created_at'], $secondBody['created_at']);
+        $this->assertSame(self::PAYER_BALANCE - 1000, $this->balanceOf(self::PAYER));
+        $this->assertSame(self::PAYEE_BALANCE + 1000, $this->balanceOf(self::PAYEE));
+        $this->assertSame(1, Db::table('transfers')->count());
+        $this->assertCount(1, $this->authorizer()->authorized);
+        $this->assertCount(1, $this->notifier()->notified);
+    }
+
+    /** CONC-06: same key with a different body is a conflict. */
+    public function testRejectsTheSameIdempotencyKeyWithADifferentBody(): void
+    {
+        $headers = ['Idempotency-Key' => 'demo-key-conflict'];
+
+        $first = $this->postTransfer(
+            ['value' => 10.00, 'payer' => self::PAYER, 'payee' => self::PAYEE],
+            $headers
+        );
+        $this->assertSame(201, $first->getStatusCode());
+
+        $second = $this->postTransfer(
+            ['value' => 20.00, 'payer' => self::PAYER, 'payee' => self::PAYEE],
+            $headers
+        );
+
+        $this->assertSame(422, $second->getStatusCode());
+        $this->assertSame('idempotency_key_conflict', $this->bodyOf($second)['error']);
+        $this->assertSame(self::PAYER_BALANCE - 1000, $this->balanceOf(self::PAYER));
+        $this->assertSame(self::PAYEE_BALANCE + 1000, $this->balanceOf(self::PAYEE));
+        $this->assertSame(1, Db::table('transfers')->count());
+    }
+
+    /** CONC-07: without a key each request is independent. */
+    public function testTreatsRequestsWithoutAnIdempotencyKeyAsIndependent(): void
+    {
+        $first = $this->postTransfer(['value' => 10.00, 'payer' => self::PAYER, 'payee' => self::PAYEE]);
+        $second = $this->postTransfer(['value' => 10.00, 'payer' => self::PAYER, 'payee' => self::PAYEE]);
+
+        $this->assertSame(201, $first->getStatusCode());
+        $this->assertSame(201, $second->getStatusCode());
+        $this->assertNotSame($this->bodyOf($first)['id'], $this->bodyOf($second)['id']);
+        $this->assertSame(self::PAYER_BALANCE - 2000, $this->balanceOf(self::PAYER));
+        $this->assertSame(2, Db::table('transfers')->count());
+        $this->assertCount(2, $this->authorizer()->authorized);
+    }
+
+    public function testRejectsAnEmptyIdempotencyKey(): void
+    {
+        $response = $this->postTransfer(
+            ['value' => 10.00, 'payer' => self::PAYER, 'payee' => self::PAYEE],
+            ['Idempotency-Key' => '   ']
+        );
+
+        $this->assertRejected($response, 422, 'invalid_request');
+        $this->assertCount(0, $this->authorizer()->authorized);
     }
 
     public function testNotifiesThePayeeOnceThroughTheFakeBoundToThePort(): void
@@ -252,11 +333,12 @@ final class TransferEndpointTest extends HttpTestCase
 
     /**
      * @param array<string, mixed> $payload
+     * @param array<string, string> $extraHeaders
      */
-    private function postTransfer(array $payload): ResponseInterface
+    private function postTransfer(array $payload, array $extraHeaders = []): ResponseInterface
     {
         return $this->request('POST', '/transfers', [
-            'headers' => ['Content-Type' => 'application/json'],
+            'headers' => array_merge(['Content-Type' => 'application/json'], $extraHeaders),
             'json' => $payload,
         ]);
     }

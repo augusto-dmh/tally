@@ -34,6 +34,21 @@ final class DbWalletRepository implements WalletRepository
         );
     }
 
+    public function findByUserIdForUpdate(int $userId): ?Wallet
+    {
+        $row = Db::table('wallets')->where('user_id', $userId)->lockForUpdate()->first();
+
+        if ($row === null) {
+            return null;
+        }
+
+        return new Wallet(
+            (int) $row->id,
+            (int) $row->user_id,
+            Money::fromCents((int) $row->balance_cents),
+        );
+    }
+
     /**
      * The balance is the only thing a wallet can change today.
      */

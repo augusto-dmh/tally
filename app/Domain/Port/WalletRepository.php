@@ -18,5 +18,10 @@ interface WalletRepository
 {
     public function findByUserId(int $userId): ?Wallet;
 
+    /**
+     * SELECT … FOR UPDATE. Call only inside a TransactionRunner transaction.
+     */
+    public function findByUserIdForUpdate(int $userId): ?Wallet;
+
     public function save(Wallet $wallet): void;
 }

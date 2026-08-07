@@ -29,6 +29,7 @@ abstract class IntegrationTestCase extends TestCase
         Db::table('transfers')->delete();
         Db::table('wallets')->delete();
         Db::table('users')->delete();
+        Db::table('idempotency_keys')->delete();
     }
 
     protected function insertUser(string $cpf, string $type = 'common', string $fullName = 'Alice Ramos', string $email = 'alice@tally.test'): int

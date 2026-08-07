@@ -15,18 +15,22 @@ namespace HyperfTest\Unit\Application;
 use App\Application\TransferFunds;
 use App\Application\TransferFundsInput;
 use App\Domain\Exception\DomainException;
+use App\Domain\Exception\IdempotencyDuplicateKey;
+use App\Domain\Exception\IdempotencyKeyConflict;
 use App\Domain\Exception\InsufficientBalance;
 use App\Domain\Exception\InvalidAmount;
 use App\Domain\Exception\MerchantCannotTransfer;
-use App\Domain\Exception\NotificationFailed;
 use App\Domain\Exception\SelfTransferNotAllowed;
 use App\Domain\Exception\TransferUnauthorized;
 use App\Domain\Exception\UserNotFound;
+use App\Domain\IdempotencyRecord;
 use App\Domain\Money;
+use App\Domain\Port\IdempotencyStore;
 use App\Domain\User;
 use App\Domain\UserType;
 use App\Domain\Wallet;
 use DateTimeImmutable;
+use HyperfTest\Fake\FakeIdempotencyStore;
 use HyperfTest\Fake\FakeTransactionRunner;
 use HyperfTest\Fake\FakeTransferAuthorizer;
 use HyperfTest\Fake\FakeTransferNotifier;
@@ -40,6 +44,10 @@ use PHPUnit\Framework\TestCase;
  * 10050 cents in wallet 11, user 2 a common payee holding 5000 in wallet 22,
  * user 3 a merchant holding 700 in wallet 33, and user 4 a common user with
  * no wallet at all.
+ *
+ * Spec anchors: CONC-03 (authorize decline persists nothing), CONC-04 (notify
+ * fail after commit still succeeds), CONC-05/06/07 (idempotent replay, key
+ * conflict, no-key independence).
  *
  * @internal
  * @coversNothing
@@ -57,6 +65,8 @@ class TransferFundsTest extends TestCase
     private FakeTransferNotifier $notifier;
 
     private FakeTransactionRunner $runner;
+
+    private FakeIdempotencyStore $idempotency;
 
     private TransferFunds $transferFunds;
 
@@ -77,6 +87,7 @@ class TransferFundsTest extends TestCase
         $this->authorizer = new FakeTransferAuthorizer();
         $this->notifier = new FakeTransferNotifier();
         $this->runner = new FakeTransactionRunner();
+        $this->idempotency = new FakeIdempotencyStore();
 
         $this->transferFunds = new TransferFunds(
             $this->runner,
@@ -85,6 +96,7 @@ class TransferFundsTest extends TestCase
             $this->transfers,
             $this->authorizer,
             $this->notifier,
+            $this->idempotency,
         );
     }
 
@@ -92,8 +104,9 @@ class TransferFundsTest extends TestCase
     {
         $before = new DateTimeImmutable();
 
-        $output = $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(2550)));
+        $result = $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(2550)));
 
+        $this->assertSame(201, $result->statusCode);
         $this->assertSame(7500, $this->wallets->walletsByUserId[1]->balance()->cents());
         $this->assertSame(7550, $this->wallets->walletsByUserId[2]->balance()->cents());
 
@@ -105,6 +118,8 @@ class TransferFundsTest extends TestCase
         $this->assertGreaterThanOrEqual($before, $transfer->createdAt);
         $this->assertLessThanOrEqual(new DateTimeImmutable(), $transfer->createdAt);
 
+        $output = $result->output;
+        $this->assertNotNull($output);
         $this->assertSame($transfer->id, $output->id);
         $this->assertSame(1, $output->payerId);
         $this->assertSame(2, $output->payeeId);
@@ -112,12 +127,14 @@ class TransferFundsTest extends TestCase
         $this->assertEquals($transfer->createdAt, $output->createdAt);
 
         $this->assertSame(1, $this->runner->runs);
+        $this->assertSame([1, 2], $this->wallets->forUpdateUserIds);
     }
 
     public function testItMovesMoneyToAMerchantPayee(): void
     {
-        $output = $this->transferFunds->execute(new TransferFundsInput(1, 3, Money::fromCents(2550)));
+        $result = $this->transferFunds->execute(new TransferFundsInput(1, 3, Money::fromCents(2550)));
 
+        $this->assertSame(201, $result->statusCode);
         $this->assertSame(7500, $this->wallets->walletsByUserId[1]->balance()->cents());
         $this->assertSame(3250, $this->wallets->walletsByUserId[3]->balance()->cents());
 
@@ -126,8 +143,10 @@ class TransferFundsTest extends TestCase
         $this->assertSame(33, $this->transfers->added[0]->payeeWalletId);
         $this->assertSame(2550, $this->transfers->added[0]->amount->cents());
 
-        $this->assertSame(3, $output->payeeId);
-        $this->assertSame(2550, $output->amount->cents());
+        $this->assertNotNull($result->output);
+        $this->assertSame(3, $result->output->payeeId);
+        $this->assertSame(2550, $result->output->amount->cents());
+        $this->assertSame([1, 3], $this->wallets->forUpdateUserIds);
     }
 
     public function testItMovesASingleCent(): void
@@ -231,18 +250,323 @@ class TransferFundsTest extends TestCase
         $this->executeExpecting(TransferUnauthorized::class, new TransferFundsInput(1, 2, Money::fromCents(2550)));
 
         $this->assertCount(1, $this->authorizer->authorized);
+        $this->assertSame(11, $this->authorizer->authorized[0]->payerWalletId);
+        $this->assertSame(22, $this->authorizer->authorized[0]->payeeWalletId);
+        $this->assertSame(0, $this->runner->runs);
+        $this->assertSame([], $this->wallets->forUpdateUserIds);
         $this->assertSeededBalances();
         $this->assertSame([], $this->transfers->added);
         $this->assertSame([], $this->notifier->notified);
     }
 
-    public function testItLetsANotifierFailureEscapeTheTransaction(): void
+    /** CONC-04: notify failure after commit must not undo the money move. */
+    public function testItKeepsTheTransferWhenTheNotifierFailsAfterCommit(): void
     {
         $this->notifier->fails = true;
 
-        $this->executeExpecting(NotificationFailed::class, new TransferFundsInput(1, 2, Money::fromCents(2550)));
+        $result = $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(2550)));
 
+        $this->assertSame(201, $result->statusCode);
+        $this->assertSame(7500, $this->wallets->walletsByUserId[1]->balance()->cents());
+        $this->assertSame(7550, $this->wallets->walletsByUserId[2]->balance()->cents());
+        $this->assertCount(1, $this->transfers->added);
         $this->assertCount(1, $this->notifier->notified);
+        $this->assertNull($this->runner->thrown);
+        $this->assertSame(1, $this->runner->runs);
+    }
+
+    /** CONC-05: same key + body replays the stored terminal outcome. */
+    public function testItReplaysAStoredIdempotentSuccessWithoutSideEffects(): void
+    {
+        $storedBody = [
+            'id' => 99,
+            'payer' => 1,
+            'payee' => 2,
+            'value' => '25.50',
+            'created_at' => '2026-01-01T00:00:00+00:00',
+        ];
+        $this->idempotency->save(new IdempotencyRecord(
+            'key-1',
+            'hash-abc',
+            201,
+            $storedBody,
+            new DateTimeImmutable('2026-01-01 00:00:00'),
+        ));
+
+        $result = $this->transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(2550),
+            'key-1',
+            'hash-abc',
+        ));
+
+        $this->assertSame(201, $result->statusCode);
+        $this->assertSame($storedBody, $result->body);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame([], $this->authorizer->authorized);
+        $this->assertSame([], $this->notifier->notified);
+        $this->assertSame(0, $this->runner->runs);
+    }
+
+    /** CONC-05: a live success under a key is stored and replayed on retry. */
+    public function testItStoresASuccessfulOutcomeAndReplaysItOnTheSameKey(): void
+    {
+        $first = $this->transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(2550),
+            'key-live',
+            'hash-live',
+        ));
+
+        $this->assertSame(201, $first->statusCode);
+        $this->assertSame(7500, $this->wallets->walletsByUserId[1]->balance()->cents());
+        $this->assertCount(1, $this->transfers->added);
+        $this->assertCount(1, $this->authorizer->authorized);
+
+        $second = $this->transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(2550),
+            'key-live',
+            'hash-live',
+        ));
+
+        $this->assertSame(201, $second->statusCode);
+        $this->assertSame($first->body, $second->body);
+        $this->assertSame(7500, $this->wallets->walletsByUserId[1]->balance()->cents());
+        $this->assertCount(1, $this->transfers->added);
+        $this->assertCount(1, $this->authorizer->authorized);
+        $this->assertCount(1, $this->notifier->notified);
+    }
+
+    /** CONC-06: same key with a different body is a conflict. */
+    public function testItRejectsTheSameIdempotencyKeyWithADifferentBody(): void
+    {
+        $this->idempotency->save(new IdempotencyRecord(
+            'key-conflict',
+            'hash-one',
+            201,
+            ['id' => 1],
+            new DateTimeImmutable('2026-01-01 00:00:00'),
+        ));
+
+        try {
+            $this->transferFunds->execute(new TransferFundsInput(
+                1,
+                2,
+                Money::fromCents(100),
+                'key-conflict',
+                'hash-two',
+            ));
+            $this->fail('Expected IdempotencyKeyConflict');
+        } catch (IdempotencyKeyConflict $thrown) {
+            $this->assertInstanceOf(IdempotencyKeyConflict::class, $thrown);
+        }
+
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame([], $this->authorizer->authorized);
+        $this->assertSame(0, $this->runner->runs);
+    }
+
+    /** CONC-03 + keyed: authorize decline stores a terminal 403 for replay. */
+    public function testItStoresAKeyedAuthorizerDeclineAndReplaysIt(): void
+    {
+        $this->authorizer->authorizes = false;
+
+        $first = $this->transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(2550),
+            'key-403',
+            'hash-403',
+        ));
+
+        $this->assertSame(403, $first->statusCode);
+        $this->assertSame('transfer_unauthorized', $first->body['error']);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame(0, $this->runner->runs);
+
+        $this->authorizer->authorizes = true;
+        $second = $this->transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(2550),
+            'key-403',
+            'hash-403',
+        ));
+
+        $this->assertSame(403, $second->statusCode);
+        $this->assertSame($first->body, $second->body);
+        $this->assertSeededBalances();
+        $this->assertCount(1, $this->authorizer->authorized);
+        $this->assertSame([], $this->transfers->added);
+    }
+
+    /**
+     * When a keyed attempt fails locally but another worker already stored the
+     * terminal outcome for the same key+body, replay the winner — do not return
+     * the local failure (false 422 while money moved under that key).
+     */
+    public function testItReplaysTheWinnerWhenStoringAKeyedFailureHitsADuplicateKey(): void
+    {
+        $winnerBody = [
+            'id' => 99,
+            'payer' => 1,
+            'payee' => 2,
+            'value' => '100.50',
+            'created_at' => '2026-08-04T12:00:00+00:00',
+        ];
+        $winner = new IdempotencyRecord(
+            'key-race-fail',
+            'hash-race-fail',
+            201,
+            $winnerBody,
+            new DateTimeImmutable('2026-08-04 12:00:00'),
+        );
+
+        $store = new class ($winner) implements IdempotencyStore {
+            private int $finds = 0;
+
+            public function __construct(private readonly IdempotencyRecord $winner)
+            {
+            }
+
+            public function find(string $key): ?IdempotencyRecord
+            {
+                // Miss on entry so executeFresh runs; hit on replayStored.
+                return $this->finds++ === 0 ? null : $this->winner;
+            }
+
+            public function save(IdempotencyRecord $record): void
+            {
+                throw new IdempotencyDuplicateKey(
+                    'Idempotency key was claimed by a concurrent request; re-read and replay.'
+                );
+            }
+        };
+
+        $this->authorizer->authorizes = false;
+        $transferFunds = new TransferFunds(
+            $this->runner,
+            $this->users,
+            $this->wallets,
+            $this->transfers,
+            $this->authorizer,
+            $this->notifier,
+            $store,
+        );
+
+        $result = $transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(2550),
+            'key-race-fail',
+            'hash-race-fail',
+        ));
+
+        $this->assertSame(201, $result->statusCode);
+        $this->assertSame($winnerBody, $result->body);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame(0, $this->runner->runs);
+    }
+
+    /** Keyed insufficient-balance stores a terminal 422 for replay. */
+    public function testItStoresAKeyedInsufficientBalanceAndReplaysIt(): void
+    {
+        $first = $this->transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(10051),
+            'key-422',
+            'hash-422',
+        ));
+
+        $this->assertSame(422, $first->statusCode);
+        $this->assertSame('insufficient_balance', $first->body['error']);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame([], $this->authorizer->authorized);
+        $this->assertSame(0, $this->runner->runs);
+
+        $second = $this->transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(10051),
+            'key-422',
+            'hash-422',
+        ));
+
+        $this->assertSame(422, $second->statusCode);
+        $this->assertSame($first->body, $second->body);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame([], $this->authorizer->authorized);
+        $this->assertSame([], $this->notifier->notified);
+        $this->assertSame(0, $this->runner->runs);
+    }
+
+    /** Keyed user-not-found stores a terminal 404 for replay. */
+    public function testItStoresAKeyedUserNotFoundAndReplaysIt(): void
+    {
+        $first = $this->transferFunds->execute(new TransferFundsInput(
+            99,
+            2,
+            Money::fromCents(2550),
+            'key-404',
+            'hash-404',
+        ));
+
+        $this->assertSame(404, $first->statusCode);
+        $this->assertSame('user_not_found', $first->body['error']);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame([], $this->authorizer->authorized);
+        $this->assertSame(0, $this->runner->runs);
+
+        $second = $this->transferFunds->execute(new TransferFundsInput(
+            99,
+            2,
+            Money::fromCents(2550),
+            'key-404',
+            'hash-404',
+        ));
+
+        $this->assertSame(404, $second->statusCode);
+        $this->assertSame($first->body, $second->body);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame([], $this->authorizer->authorized);
+        $this->assertSame([], $this->notifier->notified);
+        $this->assertSame(0, $this->runner->runs);
+    }
+
+    /** CONC-07: without a key each request is independent. */
+    public function testItTreatsRequestsWithoutAnIdempotencyKeyAsIndependent(): void
+    {
+        $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(2550)));
+        $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(1000)));
+
+        $this->assertSame(6500, $this->wallets->walletsByUserId[1]->balance()->cents());
+        $this->assertSame(8550, $this->wallets->walletsByUserId[2]->balance()->cents());
+        $this->assertCount(2, $this->transfers->added);
+        $this->assertCount(2, $this->authorizer->authorized);
+        $this->assertCount(2, $this->notifier->notified);
+    }
+
+    /** Locks lower wallet id first even when payee wallet id is smaller. */
+    public function testItLocksWalletsInAscendingIdOrder(): void
+    {
+        $this->wallets->save(new Wallet(5, 2, Money::fromCents(5000)));
+
+        $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(100)));
+
+        $this->assertSame([2, 1], $this->wallets->forUpdateUserIds);
     }
 
     private function user(int $id, UserType $type): User
@@ -257,9 +581,6 @@ class TransferFundsTest extends TestCase
     }
 
     /**
-     * Runs the use case expecting it to fail, and proves the failure crossed
-     * the transaction boundary — which is what rolls the transfer back.
-     *
      * @param class-string<DomainException> $expected
      */
     private function executeExpecting(string $expected, TransferFundsInput $input): void
@@ -269,7 +590,9 @@ class TransferFundsTest extends TestCase
             $this->fail('Executing the transfer should have thrown ' . $expected);
         } catch (DomainException $thrown) {
             $this->assertInstanceOf($expected, $thrown);
-            $this->assertSame($thrown, $this->runner->thrown);
+            if ($this->runner->thrown !== null) {
+                $this->assertSame($thrown, $this->runner->thrown);
+            }
         }
     }
 
@@ -279,6 +602,7 @@ class TransferFundsTest extends TestCase
         $this->assertSame([], $this->transfers->added);
         $this->assertSame([], $this->authorizer->authorized);
         $this->assertSame([], $this->notifier->notified);
+        $this->assertSame(0, $this->runner->runs);
     }
 
     private function assertSeededBalances(): void

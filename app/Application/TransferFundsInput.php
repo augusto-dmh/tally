@@ -20,6 +20,8 @@ final class TransferFundsInput
         public readonly int $payerId,
         public readonly int $payeeId,
         public readonly Money $amount,
+        public readonly ?string $idempotencyKey = null,
+        public readonly ?string $requestHash = null,
     ) {
     }
 }

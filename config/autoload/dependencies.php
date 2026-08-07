@@ -9,6 +9,7 @@ declare(strict_types=1);
  * @contact  group@hyperf.io
  * @license  https://github.com/hyperf/hyperf/blob/master/LICENSE
  */
+use App\Domain\Port\IdempotencyStore;
 use App\Domain\Port\TransactionRunner;
 use App\Domain\Port\TransferAuthorizer;
 use App\Domain\Port\TransferNotifier;
@@ -17,6 +18,7 @@ use App\Domain\Port\UserRepository;
 use App\Domain\Port\WalletRepository;
 use App\Infrastructure\Http\DeviToolsAuthorizer;
 use App\Infrastructure\Http\DeviToolsNotifier;
+use App\Infrastructure\Persistence\DbIdempotencyStore;
 use App\Infrastructure\Persistence\DbTransactionRunner;
 use App\Infrastructure\Persistence\DbTransferRepository;
 use App\Infrastructure\Persistence\DbUserRepository;
@@ -31,6 +33,7 @@ $bindings = [
     WalletRepository::class => DbWalletRepository::class,
     TransferRepository::class => DbTransferRepository::class,
     TransactionRunner::class => DbTransactionRunner::class,
+    IdempotencyStore::class => DbIdempotencyStore::class,
     TransferAuthorizer::class => static fn (ContainerInterface $container) => new DeviToolsAuthorizer(
         $container->get(ClientFactory::class),
         env('AUTHORIZER_URL', DeviToolsAuthorizer::DEFAULT_BASE_URI),

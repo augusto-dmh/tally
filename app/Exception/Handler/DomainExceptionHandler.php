@@ -12,10 +12,10 @@ declare(strict_types=1);
 
 namespace App\Exception\Handler;
 
+use App\Domain\Exception\IdempotencyKeyConflict;
 use App\Domain\Exception\InsufficientBalance;
 use App\Domain\Exception\InvalidAmount;
 use App\Domain\Exception\MerchantCannotTransfer;
-use App\Domain\Exception\NotificationFailed;
 use App\Domain\Exception\SelfTransferNotAllowed;
 use App\Domain\Exception\TransferUnauthorized;
 use App\Domain\Exception\UserNotFound;
@@ -41,7 +41,7 @@ class DomainExceptionHandler extends ExceptionHandler
         InsufficientBalance::class => [422, 'insufficient_balance'],
         UserNotFound::class => [404, 'user_not_found'],
         TransferUnauthorized::class => [403, 'transfer_unauthorized'],
-        NotificationFailed::class => [502, 'notification_failed'],
+        IdempotencyKeyConflict::class => [422, 'idempotency_key_conflict'],
     ];
 
     public function handle(Throwable $throwable, ResponseInterface $response)
