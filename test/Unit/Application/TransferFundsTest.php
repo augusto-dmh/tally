@@ -15,6 +15,7 @@ namespace HyperfTest\Unit\Application;
 use App\Application\TransferFunds;
 use App\Application\TransferFundsInput;
 use App\Domain\Exception\DomainException;
+use App\Domain\Exception\IdempotencyDuplicateKey;
 use App\Domain\Exception\IdempotencyKeyConflict;
 use App\Domain\Exception\InsufficientBalance;
 use App\Domain\Exception\InvalidAmount;
@@ -24,6 +25,7 @@ use App\Domain\Exception\TransferUnauthorized;
 use App\Domain\Exception\UserNotFound;
 use App\Domain\IdempotencyRecord;
 use App\Domain\Money;
+use App\Domain\Port\IdempotencyStore;
 use App\Domain\User;
 use App\Domain\UserType;
 use App\Domain\Wallet;
@@ -403,6 +405,75 @@ class TransferFundsTest extends TestCase
         $this->assertSeededBalances();
         $this->assertCount(1, $this->authorizer->authorized);
         $this->assertSame([], $this->transfers->added);
+    }
+
+    /**
+     * When a keyed attempt fails locally but another worker already stored the
+     * terminal outcome for the same key+body, replay the winner — do not return
+     * the local failure (false 422 while money moved under that key).
+     */
+    public function testItReplaysTheWinnerWhenStoringAKeyedFailureHitsADuplicateKey(): void
+    {
+        $winnerBody = [
+            'id' => 99,
+            'payer' => 1,
+            'payee' => 2,
+            'value' => '100.50',
+            'created_at' => '2026-08-04T12:00:00+00:00',
+        ];
+        $winner = new IdempotencyRecord(
+            'key-race-fail',
+            'hash-race-fail',
+            201,
+            $winnerBody,
+            new DateTimeImmutable('2026-08-04 12:00:00'),
+        );
+
+        $store = new class ($winner) implements IdempotencyStore {
+            private int $finds = 0;
+
+            public function __construct(private readonly IdempotencyRecord $winner)
+            {
+            }
+
+            public function find(string $key): ?IdempotencyRecord
+            {
+                // Miss on entry so executeFresh runs; hit on replayStored.
+                return $this->finds++ === 0 ? null : $this->winner;
+            }
+
+            public function save(IdempotencyRecord $record): void
+            {
+                throw new IdempotencyDuplicateKey(
+                    'Idempotency key was claimed by a concurrent request; re-read and replay.'
+                );
+            }
+        };
+
+        $this->authorizer->authorizes = false;
+        $transferFunds = new TransferFunds(
+            $this->runner,
+            $this->users,
+            $this->wallets,
+            $this->transfers,
+            $this->authorizer,
+            $this->notifier,
+            $store,
+        );
+
+        $result = $transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(2550),
+            'key-race-fail',
+            'hash-race-fail',
+        ));
+
+        $this->assertSame(201, $result->statusCode);
+        $this->assertSame($winnerBody, $result->body);
+        $this->assertSeededBalances();
+        $this->assertSame([], $this->transfers->added);
+        $this->assertSame(0, $this->runner->runs);
     }
 
     /** Keyed insufficient-balance stores a terminal 422 for replay. */

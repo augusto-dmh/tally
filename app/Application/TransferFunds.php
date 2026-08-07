@@ -88,7 +88,13 @@ final class TransferFunds
             }
 
             $result = $this->resultFromDomainException($exception);
-            $this->storeTerminalOutcome($input, $result);
+
+            try {
+                $this->storeTerminalOutcome($input, $result);
+            } catch (IdempotencyDuplicateKey) {
+                // Winner already stored the terminal outcome for this key+body.
+                return $this->replayStored((string) $input->idempotencyKey);
+            }
 
             return $result;
         }
@@ -224,17 +230,13 @@ final class TransferFunds
 
     private function storeTerminalOutcome(TransferFundsInput $input, TransferResult $result): void
     {
-        try {
-            $this->idempotencyStore->save(new IdempotencyRecord(
-                (string) $input->idempotencyKey,
-                (string) $input->requestHash,
-                $result->statusCode,
-                $result->body,
-                new DateTimeImmutable(),
-            ));
-        } catch (IdempotencyDuplicateKey) {
-            // Winner's row is authoritative; caller already has a terminal result.
-        }
+        $this->idempotencyStore->save(new IdempotencyRecord(
+            (string) $input->idempotencyKey,
+            (string) $input->requestHash,
+            $result->statusCode,
+            $result->body,
+            new DateTimeImmutable(),
+        ));
     }
 
     private function replayStored(string $key): TransferResult
