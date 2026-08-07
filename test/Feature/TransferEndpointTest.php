@@ -12,8 +12,10 @@ declare(strict_types=1);
 
 namespace HyperfTest\Feature;
 
+use App\Domain\LedgerDirection;
 use App\Domain\Port\TransferAuthorizer;
 use App\Domain\Port\TransferNotifier;
+use App\Infrastructure\Persistence\OpeningLedgerBackfill;
 use Hyperf\Context\ApplicationContext;
 use Hyperf\DbConnection\Db;
 use Hyperf\Testing\Client;
@@ -97,6 +99,71 @@ final class TransferEndpointTest extends HttpTestCase
         $this->assertSame($this->walletOf(self::PAYEE), (int) $row->payee_wallet_id);
         $this->assertSame(10050, (int) $row->amount_cents);
         $this->assertSame(1, Db::table('transfers')->count());
+    }
+
+    /**
+     * LEDG-01 / LEDG-04 / LEDG-07: successful transfer posts two balancing legs
+     * tied to transfer_id; wallet balance_cents matches journal net; HTTP body
+     * shape stays {id, payer, payee, value, created_at}.
+     */
+    public function testPostsBalancedLedgerLegsMatchingWalletProjection(): void
+    {
+        (new OpeningLedgerBackfill())->run();
+
+        $response = $this->postTransfer(['value' => 100.50, 'payer' => self::PAYER, 'payee' => self::PAYEE]);
+
+        $this->assertSame(201, $response->getStatusCode());
+        $body = $this->bodyOf($response);
+        $this->assertSame(
+            ['id', 'payer', 'payee', 'value', 'created_at'],
+            array_keys($body),
+        );
+        $this->assertSame(self::PAYER, $body['payer']);
+        $this->assertSame(self::PAYEE, $body['payee']);
+        $this->assertSame('100.50', $body['value']);
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$/', $body['created_at']);
+
+        $payerWalletId = $this->walletOf(self::PAYER);
+        $payeeWalletId = $this->walletOf(self::PAYEE);
+        $legs = Db::table('ledger_entries')
+            ->where('transfer_id', $body['id'])
+            ->orderBy('id')
+            ->get();
+
+        $this->assertCount(2, $legs);
+        $debit = $legs[0];
+        $credit = $legs[1];
+        $this->assertSame((string) $debit->journal_id, (string) $credit->journal_id);
+        $this->assertSame($payerWalletId, (int) $debit->wallet_id);
+        $this->assertSame($payeeWalletId, (int) $credit->wallet_id);
+        $this->assertSame(LedgerDirection::Debit->value, (string) $debit->direction);
+        $this->assertSame(LedgerDirection::Credit->value, (string) $credit->direction);
+        $this->assertSame(10050, (int) $debit->amount_cents);
+        $this->assertSame(10050, (int) $credit->amount_cents);
+
+        $this->assertSame(
+            self::PAYER_BALANCE - 10050,
+            $this->walletNetCents($payerWalletId),
+        );
+        $this->assertSame(
+            self::PAYEE_BALANCE + 10050,
+            $this->walletNetCents($payeeWalletId),
+        );
+        $this->assertSame($this->balanceOf(self::PAYER), $this->walletNetCents($payerWalletId));
+        $this->assertSame($this->balanceOf(self::PAYEE), $this->walletNetCents($payeeWalletId));
+    }
+
+    /** LEDG-03: authorizer decline leaves no transfer-linked ledger legs. */
+    public function testLeavesNoTransferLegsWhenAuthorizerDeclines(): void
+    {
+        $this->authorizer()->authorizes = false;
+
+        $response = $this->postTransfer(['value' => 10.00, 'payer' => self::PAYER, 'payee' => self::PAYEE]);
+
+        $this->assertRejected($response, 403, 'transfer_unauthorized');
+        $this->assertSame(0, Db::table('ledger_entries')->whereNotNull('transfer_id')->count());
+        $this->assertSame(self::PAYER_BALANCE, $this->balanceOf(self::PAYER));
+        $this->assertSame(self::PAYEE_BALANCE, $this->balanceOf(self::PAYEE));
     }
 
     public function testPaysAMerchantWhoOnlyEverReceives(): void
@@ -330,6 +397,7 @@ final class TransferEndpointTest extends HttpTestCase
         $this->assertSame(self::PAYER_BALANCE, $this->balanceOf(self::PAYER));
         $this->assertSame(self::PAYEE_BALANCE, $this->balanceOf(self::PAYEE));
         $this->assertSame(0, Db::table('transfers')->count());
+        $this->assertSame(0, Db::table('ledger_entries')->whereNotNull('transfer_id')->count());
     }
 
     /**
@@ -370,6 +438,18 @@ final class TransferEndpointTest extends HttpTestCase
     private function walletOf(int $userId): int
     {
         return (int) Db::table('wallets')->where('user_id', $userId)->value('id');
+    }
+
+    private function walletNetCents(int $walletId): int
+    {
+        $credit = LedgerDirection::Credit->value;
+
+        return (int) Db::table('ledger_entries')
+            ->where('wallet_id', $walletId)
+            ->selectRaw(
+                "COALESCE(SUM(CASE WHEN direction = '{$credit}' THEN amount_cents ELSE -amount_cents END), 0) AS net"
+            )
+            ->value('net');
     }
 
     private function insertUser(int $id, string $fullName, string $cpf, string $email, string $type): void
