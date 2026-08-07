@@ -1,0 +1,7 @@
+# CI overlay: keep the app container alive without booting Hyperf.
+# The bind mount replaces the image's /opt/www (including vendor), so
+# `php bin/hyperf.php start` exits before composer install can run.
+# Tests use in-process hyperf/testing via `compose exec`, not this process.
+services:
+  hyperf-skeleton:
+    entrypoint: ["sleep", "infinity"]
