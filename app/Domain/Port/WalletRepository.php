@@ -24,4 +24,9 @@ interface WalletRepository
     public function findByUserIdForUpdate(int $userId): ?Wallet;
 
     public function save(Wallet $wallet): void;
+
+    /**
+     * @return array<int, int> wallet id → balance_cents for every wallet
+     */
+    public function listBalanceCentsByWalletId(): array;
 }

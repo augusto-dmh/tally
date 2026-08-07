@@ -47,6 +47,17 @@ final class FakeWalletRepository implements WalletRepository
         $this->walletsByUserId[$wallet->userId] = $this->copyOf($wallet);
     }
 
+    public function listBalanceCentsByWalletId(): array
+    {
+        $balances = [];
+
+        foreach ($this->walletsByUserId as $wallet) {
+            $balances[$wallet->id] = $wallet->balance()->cents();
+        }
+
+        return $balances;
+    }
+
     private function copyOf(Wallet $wallet): Wallet
     {
         return new Wallet($wallet->id, $wallet->userId, $wallet->balance());
