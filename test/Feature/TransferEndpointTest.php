@@ -58,6 +58,7 @@ final class TransferEndpointTest extends HttpTestCase
         // read below are the very objects the request handler uses.
         $this->client = make(Client::class);
 
+        Db::table('ledger_entries')->delete();
         Db::table('transfers')->delete();
         Db::table('wallets')->delete();
         Db::table('users')->delete();

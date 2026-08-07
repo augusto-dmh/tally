@@ -9,6 +9,7 @@ declare(strict_types=1);
  * @contact  group@hyperf.io
  * @license  https://github.com/hyperf/hyperf/blob/master/LICENSE
  */
+use App\Infrastructure\Persistence\OpeningLedgerBackfill;
 use Hyperf\Database\Seeders\Seeder;
 use Hyperf\DbConnection\Db;
 
@@ -55,5 +56,7 @@ class DatabaseSeeder extends Seeder
                 ]
             );
         }
+
+        (new OpeningLedgerBackfill())->run();
     }
 }
