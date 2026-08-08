@@ -20,7 +20,10 @@ use stdClass;
 
 final class DbOutbox implements Outbox
 {
-    private const CLAIM_LEASE_SECONDS = 60;
+    public function __construct(
+        private readonly int $claimLeaseSeconds = 60,
+    ) {
+    }
 
     public function enqueue(
         string $eventType,
@@ -50,7 +53,7 @@ final class DbOutbox implements Outbox
         }
 
         $nowSql = $now->format('Y-m-d H:i:s');
-        $leaseCutoffSql = $now->modify(sprintf('-%d seconds', self::CLAIM_LEASE_SECONDS))
+        $leaseCutoffSql = $now->modify(sprintf('-%d seconds', $this->claimLeaseSeconds))
             ->format('Y-m-d H:i:s');
 
         return Db::transaction(function () use ($limit, $nowSql, $leaseCutoffSql): array {

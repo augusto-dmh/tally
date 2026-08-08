@@ -160,7 +160,7 @@ final class DbOutboxTest extends IntegrationTestCase
     public function testClaimDueReclaimsStaleProcessingPastLease(): void
     {
         [, , $transferId] = $this->seedTransferPair(100000, 50000, 100);
-        $outbox = new DbOutbox();
+        $outbox = new DbOutbox(30);
         $createdAt = new DateTimeImmutable('2026-08-08 12:00:00');
         $outbox->enqueue(
             OutboxEventType::TransferCompleted->value,
@@ -174,13 +174,20 @@ final class DbOutboxTest extends IntegrationTestCase
             'updated_at' => '2026-08-08 12:00:00',
         ]);
 
-        $claimed = $outbox->claimDue(10, new DateTimeImmutable('2026-08-08 12:01:01'));
+        $stillLeased = $outbox->claimDue(10, new DateTimeImmutable('2026-08-08 12:00:29'));
+        $this->assertSame([], $stillLeased);
+        $this->assertSame(
+            'processing',
+            Db::table('outbox')->where('transfer_id', $transferId)->value('status'),
+        );
+
+        $claimed = $outbox->claimDue(10, new DateTimeImmutable('2026-08-08 12:00:30'));
 
         $this->assertCount(1, $claimed);
         $this->assertSame($transferId, $claimed[0]->transferId);
         $this->assertSame('processing', $claimed[0]->status);
         $this->assertSame(
-            '2026-08-08 12:01:01',
+            '2026-08-08 12:00:30',
             Db::table('outbox')->where('transfer_id', $transferId)->value('updated_at')
         );
     }

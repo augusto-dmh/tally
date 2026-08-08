@@ -42,7 +42,9 @@ $bindings = [
     TransactionRunner::class => DbTransactionRunner::class,
     IdempotencyStore::class => DbIdempotencyStore::class,
     Ledger::class => DbLedger::class,
-    Outbox::class => DbOutbox::class,
+    Outbox::class => static fn () => new DbOutbox(
+        (int) config('outbox.claim_lease_seconds', 60),
+    ),
     TransferAuthorizer::class => static fn (ContainerInterface $container) => new DeviToolsAuthorizer(
         $container->get(ClientFactory::class),
         env('AUTHORIZER_URL', DeviToolsAuthorizer::DEFAULT_BASE_URI),
