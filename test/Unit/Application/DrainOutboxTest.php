@@ -22,7 +22,7 @@ use Psr\Log\NullLogger;
 
 /**
  * Spec anchors: OUTB-04 (claim → notify → done), OUTB-06 (retry backoff),
- * OUTB-07 (dead at max attempts), unknown event_type → dead.
+ * OUTB-07 (dead at max attempts), unknown event_type / corrupt payload → dead.
  *
  * @internal
  * @coversNothing
@@ -149,5 +149,60 @@ class DrainOutboxTest extends TestCase
         $this->assertSame('dead', $outbox->messages[0]['status']);
         $this->assertSame('unknown_event_type', $outbox->messages[0]['last_error']);
         $this->assertSame([], $notifier->notified);
+    }
+
+    public function testCorruptPayloadIsMarkedDeadWithoutNotifying(): void
+    {
+        $outbox = new FakeOutbox();
+        $notifier = new FakeTransferNotifier();
+        $now = new DateTimeImmutable('2026-08-08T12:00:00+00:00');
+        $outbox->enqueue(
+            OutboxEventType::TransferCompleted->value,
+            5,
+            ['transfer_id' => 5],
+            $now,
+        );
+
+        $result = (new DrainOutbox($outbox, $notifier, new NullLogger()))->execute($now);
+
+        $this->assertSame(1, $result->processed);
+        $this->assertSame(0, $result->done);
+        $this->assertSame(0, $result->failed);
+        $this->assertSame(1, $result->dead);
+        $this->assertSame('dead', $outbox->messages[0]['status']);
+        $this->assertSame('invalid_outbox_payload: payer_wallet_id', $outbox->messages[0]['last_error']);
+        $this->assertSame([], $notifier->notified);
+    }
+
+    public function testUnexpectedNotifierErrorIsMarkedDead(): void
+    {
+        $outbox = new FakeOutbox();
+        $notifier = new class implements \App\Domain\Port\TransferNotifier {
+            public function notify(\App\Domain\Transfer $transfer): void
+            {
+                throw new \RuntimeException('notifier exploded');
+            }
+        };
+        $now = new DateTimeImmutable('2026-08-08T12:00:00+00:00');
+        $outbox->enqueue(
+            OutboxEventType::TransferCompleted->value,
+            6,
+            [
+                'transfer_id' => 6,
+                'payer_wallet_id' => 1,
+                'payee_wallet_id' => 2,
+                'amount_cents' => 100,
+            ],
+            $now,
+        );
+
+        $result = (new DrainOutbox($outbox, $notifier, new NullLogger()))->execute($now);
+
+        $this->assertSame(1, $result->processed);
+        $this->assertSame(0, $result->done);
+        $this->assertSame(0, $result->failed);
+        $this->assertSame(1, $result->dead);
+        $this->assertSame('dead', $outbox->messages[0]['status']);
+        $this->assertSame('notifier exploded', $outbox->messages[0]['last_error']);
     }
 }

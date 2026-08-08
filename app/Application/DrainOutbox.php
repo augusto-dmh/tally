@@ -20,7 +20,9 @@ use App\Domain\Port\Outbox;
 use App\Domain\Port\TransferNotifier;
 use App\Domain\Transfer;
 use DateTimeImmutable;
+use InvalidArgumentException;
 use Psr\Log\LoggerInterface;
+use Throwable;
 
 /**
  * One drain pass: claim due outbox rows, notify outside the claim transaction,
@@ -60,9 +62,8 @@ final class DrainOutbox
                 continue;
             }
 
-            $transfer = $this->transferFromPayload($message);
-
             try {
+                $transfer = $this->transferFromPayload($message);
                 $this->notifier->notify($transfer);
                 $this->outbox->markDone($message->id);
                 ++$done;
@@ -96,6 +97,20 @@ final class DrainOutbox
                     false,
                 );
                 ++$failed;
+            } catch (Throwable $exception) {
+                $this->logger->error(sprintf(
+                    'Outbox message %d marked dead after unexpected drain error: %s',
+                    $message->id,
+                    $exception->getMessage(),
+                ));
+                $this->outbox->markFailure(
+                    $message->id,
+                    $message->attempts,
+                    $now,
+                    $exception->getMessage(),
+                    true,
+                );
+                ++$dead;
             }
         }
 
@@ -105,13 +120,55 @@ final class DrainOutbox
     private function transferFromPayload(OutboxMessage $message): Transfer
     {
         $payload = $message->payload;
+        $transferId = $this->requirePositiveInt($payload, 'transfer_id');
+        $payerWalletId = $this->requirePositiveInt($payload, 'payer_wallet_id');
+        $payeeWalletId = $this->requirePositiveInt($payload, 'payee_wallet_id');
+        $amountCents = $this->requireNonNegativeInt($payload, 'amount_cents');
 
         return new Transfer(
-            (int) $payload['transfer_id'],
-            (int) $payload['payer_wallet_id'],
-            (int) $payload['payee_wallet_id'],
-            Money::fromCents((int) $payload['amount_cents']),
+            $transferId,
+            $payerWalletId,
+            $payeeWalletId,
+            Money::fromCents($amountCents),
             new DateTimeImmutable(),
         );
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function requirePositiveInt(array $payload, string $key): int
+    {
+        $value = $this->requireInt($payload, $key);
+        if ($value < 1) {
+            throw new InvalidArgumentException(sprintf('invalid_outbox_payload: %s', $key));
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function requireNonNegativeInt(array $payload, string $key): int
+    {
+        $value = $this->requireInt($payload, $key);
+        if ($value < 0) {
+            throw new InvalidArgumentException(sprintf('invalid_outbox_payload: %s', $key));
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function requireInt(array $payload, string $key): int
+    {
+        if (! array_key_exists($key, $payload) || ! is_int($payload[$key])) {
+            throw new InvalidArgumentException(sprintf('invalid_outbox_payload: %s', $key));
+        }
+
+        return $payload[$key];
     }
 }
