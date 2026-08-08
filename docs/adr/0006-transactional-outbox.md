@@ -46,7 +46,7 @@ This supersedes ADR-0003’s **request-path post-commit notify placement** only.
 The intent of a short money transaction and no HTTP on a held connection
 remains.
 
-Out of scope this cycle: authorizer breaker, provider fallback, SAGA, Kafka,
+Not part of this decision: authorizer breaker, provider fallback, SAGA, Kafka,
 purge of terminal rows, and a manual replay CLI.
 
 Alternatives considered:

@@ -30,9 +30,10 @@ persists nothing). The notifier ran **after** commit at the time of this ADR
 [ADR-0006](0006-transactional-outbox.md):** request-path post-commit notify is
 replaced by same-txn outbox enqueue and asynchronous drain; the short money
 transaction and “no HTTP on a held connection” intent here still stand. The
-transaction itself only locks, re-checks balances against locked rows, persists
-wallet balances and the transfer row, and (when present) inserts the
-idempotency success outcome.
+transaction itself locks wallets, re-checks balances against locked rows,
+persists wallet balances and the transfer row, posts ledger legs, enqueues the
+`transfer.completed` outbox row, and (when present) inserts the idempotency
+success outcome — still with no external HTTP on the held connection.
 
 Alternatives considered:
 
