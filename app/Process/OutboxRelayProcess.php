@@ -15,6 +15,8 @@ namespace App\Process;
 use App\Application\DrainOutbox;
 use Hyperf\Process\AbstractProcess;
 use Hyperf\Process\ProcessManager;
+use Psr\Log\LoggerInterface;
+use Throwable;
 
 use function Hyperf\Config\config;
 use function Hyperf\Support\env;
@@ -32,10 +34,22 @@ final class OutboxRelayProcess extends AbstractProcess
     {
         /** @var DrainOutbox $drain */
         $drain = $this->container->get(DrainOutbox::class);
+        /** @var LoggerInterface $logger */
+        $logger = $this->container->get(LoggerInterface::class);
         $sleepSeconds = (int) config('outbox.process_sleep_seconds', 1);
 
         while (ProcessManager::isRunning()) {
-            $result = $drain->execute();
+            try {
+                $result = $drain->execute();
+            } catch (Throwable $exception) {
+                $logger->error(sprintf(
+                    'Outbox relay drain failed unexpectedly: %s',
+                    $exception->getMessage(),
+                ));
+                sleep($sleepSeconds);
+                continue;
+            }
+
             if ($result->processed === 0) {
                 sleep($sleepSeconds);
             }
