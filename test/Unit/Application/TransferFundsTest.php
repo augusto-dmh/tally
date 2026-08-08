@@ -23,6 +23,7 @@ use App\Domain\Exception\MerchantCannotTransfer;
 use App\Domain\Exception\SelfTransferNotAllowed;
 use App\Domain\Exception\TransferUnauthorized;
 use App\Domain\Exception\UserNotFound;
+use App\Domain\OutboxEventType;
 use App\Domain\IdempotencyRecord;
 use App\Domain\LedgerDirection;
 use App\Domain\Money;
@@ -35,9 +36,9 @@ use App\Domain\Wallet;
 use DateTimeImmutable;
 use HyperfTest\Fake\FakeIdempotencyStore;
 use HyperfTest\Fake\FakeLedger;
+use HyperfTest\Fake\FakeOutbox;
 use HyperfTest\Fake\FakeTransactionRunner;
 use HyperfTest\Fake\FakeTransferAuthorizer;
-use HyperfTest\Fake\FakeTransferNotifier;
 use HyperfTest\Fake\FakeTransferRepository;
 use HyperfTest\Fake\FakeUserRepository;
 use HyperfTest\Fake\FakeWalletRepository;
@@ -50,9 +51,10 @@ use RuntimeException;
  * user 3 a merchant holding 700 in wallet 33, and user 4 a common user with
  * no wallet at all.
  *
- * Spec anchors: CONC-03 (authorize decline persists nothing), CONC-04 (notify
- * fail after commit still succeeds), CONC-05/06/07 (idempotent replay, key
- * conflict, no-key independence).
+ * Spec anchors: CONC-03 (authorize decline persists nothing), CONC-04 (enqueue
+ * on success; no request-path notify), CONC-05/06/07 (idempotent replay, key
+ * conflict, no-key independence), OUTB-01/02/03/09 (enqueue once; decline /
+ * mid-txn / replay do not enqueue).
  *
  * @internal
  * @coversNothing
@@ -67,7 +69,7 @@ class TransferFundsTest extends TestCase
 
     private FakeTransferAuthorizer $authorizer;
 
-    private FakeTransferNotifier $notifier;
+    private FakeOutbox $outbox;
 
     private FakeTransactionRunner $runner;
 
@@ -92,7 +94,7 @@ class TransferFundsTest extends TestCase
 
         $this->transfers = new FakeTransferRepository();
         $this->authorizer = new FakeTransferAuthorizer();
-        $this->notifier = new FakeTransferNotifier();
+        $this->outbox = new FakeOutbox();
         $this->runner = new FakeTransactionRunner();
         $this->idempotency = new FakeIdempotencyStore();
         $this->ledger = new FakeLedger();
@@ -103,7 +105,7 @@ class TransferFundsTest extends TestCase
             $this->wallets,
             $this->transfers,
             $this->authorizer,
-            $this->notifier,
+            $this->outbox,
             $this->idempotency,
             $this->ledger,
         );
@@ -159,9 +161,8 @@ class TransferFundsTest extends TestCase
         $this->assertSame([], $this->ledger->entries);
         $this->assertSame(0, $this->runner->runs);
         $this->assertSame([], $this->transfers->added);
+        $this->assertSame([], $this->outbox->messages);
     }
-
-    /** LEDG-08: keyed replay returns stored outcome without appending again. */
     public function testItDoesNotAppendLedgerLegsOnKeyedReplay(): void
     {
         $first = $this->transferFunds->execute(new TransferFundsInput(
@@ -187,6 +188,7 @@ class TransferFundsTest extends TestCase
         $this->assertSame($first->body, $second->body);
         $this->assertCount(1, $this->transfers->added);
         $this->assertCount(2, $this->ledger->entries);
+        $this->assertCount(1, $this->outbox->messages);
     }
 
     /**
@@ -208,7 +210,7 @@ class TransferFundsTest extends TestCase
             $this->wallets,
             $transfers,
             $this->authorizer,
-            $this->notifier,
+            $this->outbox,
             $this->idempotency,
             $this->ledger,
         );
@@ -222,6 +224,7 @@ class TransferFundsTest extends TestCase
         }
 
         $this->assertSame([], $this->ledger->entries);
+        $this->assertSame([], $this->outbox->messages);
         $this->assertSame(1, $this->runner->runs);
     }
 
@@ -272,14 +275,23 @@ class TransferFundsTest extends TestCase
         $this->assertSame(2550, $this->authorizer->authorized[0]->amount->cents());
     }
 
-    public function testItNotifiesThePayeeExactlyOnceWithThePersistedTransfer(): void
+    public function testItEnqueuesTransferCompletedOnceWithFrozenPayload(): void
     {
         $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(2550)));
 
-        $this->assertCount(1, $this->notifier->notified);
-        $this->assertSame($this->transfers->added[0]->id, $this->notifier->notified[0]->id);
-        $this->assertSame(22, $this->notifier->notified[0]->payeeWalletId);
-        $this->assertSame(2550, $this->notifier->notified[0]->amount->cents());
+        $this->assertCount(1, $this->outbox->messages);
+        $row = $this->outbox->messages[0];
+        $transfer = $this->transfers->added[0];
+        $this->assertSame(OutboxEventType::TransferCompleted->value, $row['event_type']);
+        $this->assertSame($transfer->id, $row['transfer_id']);
+        $this->assertSame([
+            'transfer_id' => $transfer->id,
+            'payer_wallet_id' => 11,
+            'payee_wallet_id' => 22,
+            'amount_cents' => 2550,
+        ], $row['payload']);
+        $this->assertSame('pending', $row['status']);
+        $this->assertEquals($transfer->createdAt, $row['available_at']);
     }
 
     public function testItRejectsATransferToTheSameUser(): void
@@ -351,22 +363,20 @@ class TransferFundsTest extends TestCase
         $this->assertSame([], $this->wallets->forUpdateUserIds);
         $this->assertSeededBalances();
         $this->assertSame([], $this->transfers->added);
-        $this->assertSame([], $this->notifier->notified);
+        $this->assertSame([], $this->outbox->messages);
         $this->assertSame([], $this->ledger->entries);
     }
 
-    /** CONC-04: notify failure after commit must not undo the money move. */
-    public function testItKeepsTheTransferWhenTheNotifierFailsAfterCommit(): void
+    /** CONC-04 / OUTB-01: success enqueues once; money move does not depend on notify. */
+    public function testItEnqueuesOnSuccessWithoutRequestPathNotify(): void
     {
-        $this->notifier->fails = true;
-
         $result = $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(2550)));
 
         $this->assertSame(201, $result->statusCode);
         $this->assertSame(7500, $this->wallets->walletsByUserId[1]->balance()->cents());
         $this->assertSame(7550, $this->wallets->walletsByUserId[2]->balance()->cents());
         $this->assertCount(1, $this->transfers->added);
-        $this->assertCount(1, $this->notifier->notified);
+        $this->assertCount(1, $this->outbox->messages);
         $this->assertNull($this->runner->thrown);
         $this->assertSame(1, $this->runner->runs);
         $this->assertTransferLegsPostedOnce(11, 22, 2550, $this->transfers->added[0]->id);
@@ -403,7 +413,7 @@ class TransferFundsTest extends TestCase
         $this->assertSeededBalances();
         $this->assertSame([], $this->transfers->added);
         $this->assertSame([], $this->authorizer->authorized);
-        $this->assertSame([], $this->notifier->notified);
+        $this->assertSame([], $this->outbox->messages);
         $this->assertSame(0, $this->runner->runs);
         $this->assertSame([], $this->ledger->entries);
     }
@@ -423,6 +433,7 @@ class TransferFundsTest extends TestCase
         $this->assertSame(7500, $this->wallets->walletsByUserId[1]->balance()->cents());
         $this->assertCount(1, $this->transfers->added);
         $this->assertCount(1, $this->authorizer->authorized);
+        $this->assertCount(1, $this->outbox->messages);
 
         $second = $this->transferFunds->execute(new TransferFundsInput(
             1,
@@ -437,7 +448,7 @@ class TransferFundsTest extends TestCase
         $this->assertSame(7500, $this->wallets->walletsByUserId[1]->balance()->cents());
         $this->assertCount(1, $this->transfers->added);
         $this->assertCount(1, $this->authorizer->authorized);
-        $this->assertCount(1, $this->notifier->notified);
+        $this->assertCount(1, $this->outbox->messages);
     }
 
     /** CONC-06: same key with a different body is a conflict. */
@@ -555,7 +566,7 @@ class TransferFundsTest extends TestCase
             $this->wallets,
             $this->transfers,
             $this->authorizer,
-            $this->notifier,
+            $this->outbox,
             $store,
             $this->ledger,
         );
@@ -607,7 +618,7 @@ class TransferFundsTest extends TestCase
         $this->assertSeededBalances();
         $this->assertSame([], $this->transfers->added);
         $this->assertSame([], $this->authorizer->authorized);
-        $this->assertSame([], $this->notifier->notified);
+        $this->assertSame([], $this->outbox->messages);
         $this->assertSame(0, $this->runner->runs);
     }
 
@@ -642,7 +653,7 @@ class TransferFundsTest extends TestCase
         $this->assertSeededBalances();
         $this->assertSame([], $this->transfers->added);
         $this->assertSame([], $this->authorizer->authorized);
-        $this->assertSame([], $this->notifier->notified);
+        $this->assertSame([], $this->outbox->messages);
         $this->assertSame(0, $this->runner->runs);
     }
 
@@ -656,7 +667,7 @@ class TransferFundsTest extends TestCase
         $this->assertSame(8550, $this->wallets->walletsByUserId[2]->balance()->cents());
         $this->assertCount(2, $this->transfers->added);
         $this->assertCount(2, $this->authorizer->authorized);
-        $this->assertCount(2, $this->notifier->notified);
+        $this->assertCount(2, $this->outbox->messages);
     }
 
     /** Locks lower wallet id first even when payee wallet id is smaller. */
@@ -701,7 +712,7 @@ class TransferFundsTest extends TestCase
         $this->assertSeededBalances();
         $this->assertSame([], $this->transfers->added);
         $this->assertSame([], $this->authorizer->authorized);
-        $this->assertSame([], $this->notifier->notified);
+        $this->assertSame([], $this->outbox->messages);
         $this->assertSame(0, $this->runner->runs);
         $this->assertSame([], $this->ledger->entries);
     }

@@ -20,16 +20,29 @@ acceptance stay human. Three habits structure the collaboration:
 
 Newest first. Only load-bearing interactions — routine completions are not logged.
 
+### 2026-08-08 — Transactional outbox for notify (accepted; closes 2026-08-04 gap)
+The 2026-08-04 post-commit best-effort path left an explicit deferred reliability
+gap: money could commit while notify was lost forever on crash or notifier
+outage. That gap is closed with a pure transactional outbox — enqueue
+`transfer.completed` inside the money txn, no request-path `TransferNotifier`,
+shared `DrainOutbox` for `OutboxRelayProcess` and `outbox:drain`, at-least-once
+delivery with bounded retries to in-place `dead`, terminal rows retained.
+`201` means money + durable enqueue, not external success and not exactly-once.
+Recorded as ADR-0006; short money txn / no HTTP on held connection from
+ADR-0003 remains.
+
 ### 2026-08-04 — Post-commit best-effort notify (accepted; supersedes in-txn placement)
 The 2026-08-03 live cost of notifying inside the money transaction (public
 notifier `504` → client `502`, transfer rolled back, connection held across
-HTTP) motivated moving notify to **after commit**. A committed transfer now
-answers `201` with the normal body even when the notifier fails; notification
-is best-effort until an outbox/retry path exists. The stronger “no commit
-without an attempted notify” guarantee is deliberately dropped in favor of not
+HTTP) motivated moving notify to **after commit**. A committed transfer then
+answered `201` with the normal body even when the notifier failed; notification
+was best-effort until an outbox/retry path existed. The stronger “no commit
+without an attempted notify” guarantee was deliberately dropped in favor of not
 coupling ledger durability or API availability to a third party. Recorded as an
 acceptance with an explicit deferred reliability gap, not as silence over the
-earlier trade-off.
+earlier trade-off. Superseded for current behavior by the 2026-08-08 transactional
+outbox entry above; retained as the bridge that kept money durable while delivery
+was still best-effort.
 
 ### 2026-08-03 — Notification inside the transaction: cost observed live (accepted for now)
 The transfer flow calls the notifier inside the database transaction, and the
