@@ -3,6 +3,19 @@ name: Build and Test
 on: [push, pull_request]
 
 jobs:
+  commit-messages:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check commit message hygiene
+        run: |
+          chmod +x .githooks/commit-msg scripts/check-commit-messages.sh
+          scripts/check-commit-messages.sh "origin/${{ github.base_ref }}" HEAD
+
   build:
     runs-on: ubuntu-latest
     steps:

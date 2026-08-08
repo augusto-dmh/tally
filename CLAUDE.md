@@ -25,6 +25,16 @@ measurements rather than asserted.
   `gh api -X PATCH repos/augusto-dmh/tally/pulls/<n>` instead.
 - Never `sleep N && cmd` — use `gh pr checks <n> --watch` as a background task
   or a Monitor until-loop.
+- Commit hygiene is enforced by versioned git hooks, not by prompts alone: after
+  clone/checkout run `scripts/install-git-hooks.sh` (sets
+  `core.hooksPath=.githooks`). `prepare-commit-msg` strips AI attribution
+  trailers Cursor may inject (`Co-authored-by: Cursor`, `Generated with …`,
+  `Made with Cursor`); `commit-msg` then requires
+  `type: lowercase narrative phrase` and rejects any remaining attribution.
+  CI runs `scripts/check-commit-messages.sh` on pull requests. Also turn off
+  Cursor Settings → Git & PRs → Attribution (and CLI
+  `attribution.attributeCommitsToAgent` /
+  `attribution.attributePRsToAgent`) so injection is reduced at the source.
 
 ## Durable Decisions
 
