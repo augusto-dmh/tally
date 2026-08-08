@@ -295,6 +295,7 @@ final class TransferEndpointTest extends HttpTestCase
         $this->assertSame(self::PAYEE_BALANCE + 1000, $this->balanceOf(self::PAYEE));
         $this->assertSame(1, Db::table('transfers')->count());
         $this->assertCount(1, $this->notifier()->notified);
+        $this->assertSame(2, Db::table('ledger_entries')->whereNotNull('transfer_id')->count());
     }
 
     /** CONC-05: same Idempotency-Key + body returns the stored outcome once. */
@@ -320,6 +321,10 @@ final class TransferEndpointTest extends HttpTestCase
         $this->assertSame(1, Db::table('transfers')->count());
         $this->assertCount(1, $this->authorizer()->authorized);
         $this->assertCount(1, $this->notifier()->notified);
+        $this->assertSame(
+            2,
+            Db::table('ledger_entries')->where('transfer_id', $firstBody['id'])->count(),
+        );
     }
 
     /** CONC-06: same key with a different body is a conflict. */

@@ -53,7 +53,7 @@ on transfer rows.
 Alternatives considered:
 
 - **Chart of accounts / fee accounts.** Overweight for a two-party transfer with
-  no fees this cycle; deferred until product needs more account kinds.
+  no fees; deferred until product needs more account kinds.
 - **Balance snapshots for reconcile.** Useful at larger scale; full-table
   aggregates are acceptable at demo scale. Deferred.
 - **HTTP statement / ledger query API.** Out of scope; the journal is an
@@ -67,7 +67,7 @@ Alternatives considered:
   aggregate own ledger rules and awkward for opening/reconcile paths; rejected
   in favor of the `Ledger` port.
 - **Rich mutable `Journal` domain aggregate.** Overweight for a fixed two-leg
-  pair this cycle.
+  pair.
 
 ## Consequences
 

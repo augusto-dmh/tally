@@ -369,6 +369,7 @@ class TransferFundsTest extends TestCase
         $this->assertCount(1, $this->notifier->notified);
         $this->assertNull($this->runner->thrown);
         $this->assertSame(1, $this->runner->runs);
+        $this->assertTransferLegsPostedOnce(11, 22, 2550, $this->transfers->added[0]->id);
     }
 
     /** CONC-05: same key + body replays the stored terminal outcome. */

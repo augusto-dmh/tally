@@ -14,8 +14,8 @@ use Hyperf\Crontab\Crontab;
 use function Hyperf\Support\env;
 
 /*
- * Schedules ledger:reconcile in-process (LEDG-06d). Disabled under APP_ENV=testing
- * so co-phpunit does not spawn the dispatcher. Override with CRONTAB_ENABLE outside
+ * Schedules ledger:reconcile in-process. Disabled under APP_ENV=testing so
+ * co-phpunit does not spawn the dispatcher. Override with CRONTAB_ENABLE outside
  * testing when needed.
  */
 return [

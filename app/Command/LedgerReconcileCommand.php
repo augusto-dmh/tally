@@ -18,7 +18,7 @@ use Hyperf\Command\Command as HyperfCommand;
 use Psr\Log\LoggerInterface;
 
 /**
- * CLI entry for LEDG-06: read-only reconcile; exit 0 when clean, 1 on violations.
+ * CLI entry for read-only reconcile; exit 0 when clean, 1 on violations.
  */
 #[Command]
 final class LedgerReconcileCommand extends HyperfCommand
