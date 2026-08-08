@@ -9,6 +9,7 @@ declare(strict_types=1);
  * @contact  group@hyperf.io
  * @license  https://github.com/hyperf/hyperf/blob/master/LICENSE
  */
+use App\Application\DrainOutbox;
 use App\Domain\Port\IdempotencyStore;
 use App\Domain\Port\Ledger;
 use App\Domain\Port\Outbox;
@@ -29,7 +30,9 @@ use App\Infrastructure\Persistence\DbUserRepository;
 use App\Infrastructure\Persistence\DbWalletRepository;
 use Hyperf\Guzzle\ClientFactory;
 use Psr\Container\ContainerInterface;
+use Psr\Log\LoggerInterface;
 
+use function Hyperf\Config\config;
 use function Hyperf\Support\env;
 
 $bindings = [
@@ -47,6 +50,14 @@ $bindings = [
     TransferNotifier::class => static fn (ContainerInterface $container) => new DeviToolsNotifier(
         $container->get(ClientFactory::class),
         env('NOTIFIER_URL', DeviToolsNotifier::DEFAULT_BASE_URI),
+    ),
+    DrainOutbox::class => static fn (ContainerInterface $container) => new DrainOutbox(
+        $container->get(Outbox::class),
+        $container->get(TransferNotifier::class),
+        $container->get(LoggerInterface::class),
+        (int) config('outbox.max_attempts'),
+        (int) config('outbox.batch_size'),
+        (int) config('outbox.backoff_cap_seconds'),
     ),
 ];
 
