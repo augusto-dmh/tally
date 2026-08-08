@@ -9,8 +9,10 @@ declare(strict_types=1);
  * @contact  group@hyperf.io
  * @license  https://github.com/hyperf/hyperf/blob/master/LICENSE
  */
+use App\Application\DrainOutbox;
 use App\Domain\Port\IdempotencyStore;
 use App\Domain\Port\Ledger;
+use App\Domain\Port\Outbox;
 use App\Domain\Port\TransactionRunner;
 use App\Domain\Port\TransferAuthorizer;
 use App\Domain\Port\TransferNotifier;
@@ -21,13 +23,16 @@ use App\Infrastructure\Http\DeviToolsAuthorizer;
 use App\Infrastructure\Http\DeviToolsNotifier;
 use App\Infrastructure\Persistence\DbIdempotencyStore;
 use App\Infrastructure\Persistence\DbLedger;
+use App\Infrastructure\Persistence\DbOutbox;
 use App\Infrastructure\Persistence\DbTransactionRunner;
 use App\Infrastructure\Persistence\DbTransferRepository;
 use App\Infrastructure\Persistence\DbUserRepository;
 use App\Infrastructure\Persistence\DbWalletRepository;
 use Hyperf\Guzzle\ClientFactory;
 use Psr\Container\ContainerInterface;
+use Psr\Log\LoggerInterface;
 
+use function Hyperf\Config\config;
 use function Hyperf\Support\env;
 
 $bindings = [
@@ -37,6 +42,7 @@ $bindings = [
     TransactionRunner::class => DbTransactionRunner::class,
     IdempotencyStore::class => DbIdempotencyStore::class,
     Ledger::class => DbLedger::class,
+    Outbox::class => DbOutbox::class,
     TransferAuthorizer::class => static fn (ContainerInterface $container) => new DeviToolsAuthorizer(
         $container->get(ClientFactory::class),
         env('AUTHORIZER_URL', DeviToolsAuthorizer::DEFAULT_BASE_URI),
@@ -44,6 +50,14 @@ $bindings = [
     TransferNotifier::class => static fn (ContainerInterface $container) => new DeviToolsNotifier(
         $container->get(ClientFactory::class),
         env('NOTIFIER_URL', DeviToolsNotifier::DEFAULT_BASE_URI),
+    ),
+    DrainOutbox::class => static fn (ContainerInterface $container) => new DrainOutbox(
+        $container->get(Outbox::class),
+        $container->get(TransferNotifier::class),
+        $container->get(LoggerInterface::class),
+        (int) config('outbox.max_attempts'),
+        (int) config('outbox.batch_size'),
+        (int) config('outbox.backoff_cap_seconds'),
     ),
 ];
 

@@ -23,8 +23,8 @@ use App\Infrastructure\Persistence\DbUserRepository;
 use App\Infrastructure\Persistence\DbWalletRepository;
 use DateTimeImmutable;
 use Hyperf\DbConnection\Db;
+use HyperfTest\Fake\FakeOutbox;
 use HyperfTest\Fake\FakeTransferAuthorizer;
-use HyperfTest\Fake\FakeTransferNotifier;
 use HyperfTest\Integration\IntegrationTestCase;
 use RuntimeException;
 
@@ -87,7 +87,7 @@ final class TransferFundsLedgerRollbackTest extends IntegrationTestCase
             new DbWalletRepository(),
             new DbTransferRepository(),
             new FakeTransferAuthorizer(),
-            new FakeTransferNotifier(),
+            new FakeOutbox(),
             new DbIdempotencyStore(),
             $throwingLedger,
         );

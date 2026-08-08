@@ -18,16 +18,16 @@ use App\Domain\Exception\IdempotencyKeyConflict;
 use App\Domain\Exception\InsufficientBalance;
 use App\Domain\Exception\InvalidAmount;
 use App\Domain\Exception\MerchantCannotTransfer;
-use App\Domain\Exception\NotificationFailed;
 use App\Domain\Exception\SelfTransferNotAllowed;
 use App\Domain\Exception\TransferUnauthorized;
 use App\Domain\Exception\UserNotFound;
 use App\Domain\IdempotencyRecord;
+use App\Domain\OutboxEventType;
 use App\Domain\Port\IdempotencyStore;
 use App\Domain\Port\Ledger;
+use App\Domain\Port\Outbox;
 use App\Domain\Port\TransactionRunner;
 use App\Domain\Port\TransferAuthorizer;
-use App\Domain\Port\TransferNotifier;
 use App\Domain\Port\TransferRepository;
 use App\Domain\Port\UserRepository;
 use App\Domain\Port\WalletRepository;
@@ -38,8 +38,8 @@ use DateTimeImmutable;
 use DateTimeInterface;
 
 /**
- * Authorize outside the money transaction, lock wallets inside it, notify
- * best-effort after commit. Optional idempotency stores terminal outcomes.
+ * Authorize outside the money transaction, lock wallets inside it, and enqueue
+ * a transfer.completed outbox intent in the same money txn. No request-path notify.
  */
 final class TransferFunds
 {
@@ -61,7 +61,7 @@ final class TransferFunds
         private readonly WalletRepository $walletRepository,
         private readonly TransferRepository $transferRepository,
         private readonly TransferAuthorizer $authorizer,
-        private readonly TransferNotifier $notifier,
+        private readonly Outbox $outbox,
         private readonly IdempotencyStore $idempotencyStore,
         private readonly Ledger $ledger,
     ) {
@@ -148,8 +148,8 @@ final class TransferFunds
         }
 
         try {
-            $committed = $this->transactionRunner->run(
-                function () use ($input, $payer, $payee, $payerWallet, $payeeWallet): array {
+            return $this->transactionRunner->run(
+                function () use ($input, $payer, $payee, $payerWallet, $payeeWallet): TransferResult {
                     [$lockedPayer, $lockedPayee] = $this->lockWalletsInIdOrder(
                         $payer,
                         $payee,
@@ -181,6 +181,18 @@ final class TransferFunds
                         $persisted->createdAt,
                     );
 
+                    $this->outbox->enqueue(
+                        OutboxEventType::TransferCompleted->value,
+                        $persisted->id,
+                        [
+                            'transfer_id' => $persisted->id,
+                            'payer_wallet_id' => $persisted->payerWalletId,
+                            'payee_wallet_id' => $persisted->payeeWalletId,
+                            'amount_cents' => $persisted->amount->cents(),
+                        ],
+                        $persisted->createdAt,
+                    );
+
                     $output = new TransferFundsOutput(
                         $persisted->id,
                         $payer->id,
@@ -200,20 +212,12 @@ final class TransferFunds
                         ));
                     }
 
-                    return ['result' => $result, 'transfer' => $persisted];
+                    return $result;
                 }
             );
         } catch (IdempotencyDuplicateKey) {
             return $this->replayStored((string) $input->idempotencyKey);
         }
-
-        try {
-            $this->notifier->notify($committed['transfer']);
-        } catch (NotificationFailed) {
-            // Best-effort: money is already committed.
-        }
-
-        return $committed['result'];
     }
 
     /**

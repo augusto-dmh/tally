@@ -12,10 +12,14 @@ declare(strict_types=1);
 
 namespace HyperfTest\Feature;
 
+use App\Application\DrainOutbox;
+use App\Application\DrainOutboxResult;
 use App\Domain\LedgerDirection;
+use App\Domain\Port\Outbox;
 use App\Domain\Port\TransferAuthorizer;
 use App\Domain\Port\TransferNotifier;
 use App\Infrastructure\Persistence\OpeningLedgerBackfill;
+use DateTimeImmutable;
 use Hyperf\Context\ApplicationContext;
 use Hyperf\DbConnection\Db;
 use Hyperf\Testing\Client;
@@ -24,6 +28,7 @@ use HyperfTest\Fake\FakeTransferNotifier;
 use HyperfTest\HttpTestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Psr\Http\Message\ResponseInterface;
+use Psr\Log\LoggerInterface;
 
 use function Hyperf\Support\make;
 
@@ -61,6 +66,7 @@ final class TransferEndpointTest extends HttpTestCase
         $this->client = make(Client::class);
 
         Db::table('ledger_entries')->delete();
+        Db::table('outbox')->delete();
         Db::table('transfers')->delete();
         Db::table('wallets')->delete();
         Db::table('users')->delete();
@@ -99,6 +105,8 @@ final class TransferEndpointTest extends HttpTestCase
         $this->assertSame($this->walletOf(self::PAYEE), (int) $row->payee_wallet_id);
         $this->assertSame(10050, (int) $row->amount_cents);
         $this->assertSame(1, Db::table('transfers')->count());
+        $this->assertSame(1, Db::table('outbox')->where('status', 'pending')->count());
+        $this->assertCount(0, $this->notifier()->notified);
     }
 
     /**
@@ -280,10 +288,12 @@ final class TransferEndpointTest extends HttpTestCase
         $this->assertCount(0, $this->notifier()->notified);
     }
 
-    public function testKeepsTheTransferWhenThePayeeCannotBeNotified(): void
+    /**
+     * OUTB-01 / OUTB-06 / OUTB-07: money and outbox commit on the request path;
+     * notify failure only surfaces when DrainOutbox runs (retry then dead).
+     */
+    public function testCommitsTransferAndOutboxEvenWhenLaterNotifyFails(): void
     {
-        $this->notifier()->fails = true;
-
         $response = $this->postTransfer(['value' => 10.00, 'payer' => self::PAYER, 'payee' => self::PAYEE]);
 
         $this->assertSame(201, $response->getStatusCode());
@@ -294,8 +304,25 @@ final class TransferEndpointTest extends HttpTestCase
         $this->assertSame(self::PAYER_BALANCE - 1000, $this->balanceOf(self::PAYER));
         $this->assertSame(self::PAYEE_BALANCE + 1000, $this->balanceOf(self::PAYEE));
         $this->assertSame(1, Db::table('transfers')->count());
-        $this->assertCount(1, $this->notifier()->notified);
         $this->assertSame(2, Db::table('ledger_entries')->whereNotNull('transfer_id')->count());
+        $this->assertSame(1, Db::table('outbox')->where('status', 'pending')->count());
+        $this->assertCount(0, $this->notifier()->notified);
+
+        $this->notifier()->fails = true;
+        $now = new DateTimeImmutable('2030-01-01T00:00:00+00:00');
+        $first = $this->drainOutbox($now, maxAttempts: 2);
+        $this->assertSame(1, $first->failed);
+        $this->assertSame(0, $first->dead);
+        $row = Db::table('outbox')->where('transfer_id', $body['id'])->first();
+        $this->assertSame('pending', $row->status);
+        $this->assertSame(1, (int) $row->attempts);
+
+        $second = $this->drainOutbox(new DateTimeImmutable((string) $row->available_at), maxAttempts: 2);
+        $this->assertSame(1, $second->dead);
+        $this->assertSame('dead', Db::table('outbox')->where('transfer_id', $body['id'])->value('status'));
+        $this->assertSame(1, Db::table('transfers')->count());
+        $this->assertSame(self::PAYER_BALANCE - 1000, $this->balanceOf(self::PAYER));
+        $this->assertSame(self::PAYEE_BALANCE + 1000, $this->balanceOf(self::PAYEE));
     }
 
     /** CONC-05: same Idempotency-Key + body returns the stored outcome once. */
@@ -320,7 +347,9 @@ final class TransferEndpointTest extends HttpTestCase
         $this->assertSame(self::PAYEE_BALANCE + 1000, $this->balanceOf(self::PAYEE));
         $this->assertSame(1, Db::table('transfers')->count());
         $this->assertCount(1, $this->authorizer()->authorized);
-        $this->assertCount(1, $this->notifier()->notified);
+        $this->assertCount(0, $this->notifier()->notified);
+        $this->assertSame(1, Db::table('outbox')->count());
+        $this->assertSame(1, Db::table('outbox')->where('status', 'pending')->count());
         $this->assertSame(
             2,
             Db::table('ledger_entries')->where('transfer_id', $firstBody['id'])->count(),
@@ -375,7 +404,11 @@ final class TransferEndpointTest extends HttpTestCase
         $this->assertCount(0, $this->authorizer()->authorized);
     }
 
-    public function testNotifiesThePayeeOnceThroughTheFakeBoundToThePort(): void
+    /**
+     * OUTB-01 / OUTB-04 / OUTB-05: POST enqueues once with notifier idle;
+     * DrainOutbox delivers once and marks the row done.
+     */
+    public function testDrainsTheOutboxToNotifyThePayeeOnce(): void
     {
         $this->assertInstanceOf(FakeTransferAuthorizer::class, ApplicationContext::getContainer()->get(TransferAuthorizer::class));
         $this->assertInstanceOf(FakeTransferNotifier::class, ApplicationContext::getContainer()->get(TransferNotifier::class));
@@ -383,10 +416,22 @@ final class TransferEndpointTest extends HttpTestCase
         $response = $this->postTransfer(['value' => 100.50, 'payer' => self::PAYER, 'payee' => self::PAYEE]);
 
         $this->assertSame(201, $response->getStatusCode());
+        $body = $this->bodyOf($response);
         $this->assertCount(1, $this->authorizer()->authorized);
+        $this->assertCount(0, $this->notifier()->notified);
+        $this->assertSame(1, Db::table('outbox')->where('status', 'pending')->count());
+
+        $result = $this->drainOutbox();
+
+        $this->assertSame(1, $result->processed);
+        $this->assertSame(1, $result->done);
+        $this->assertSame(0, $result->failed);
+        $this->assertSame(0, $result->dead);
+        $this->assertSame('done', Db::table('outbox')->where('transfer_id', $body['id'])->value('status'));
         $this->assertCount(1, $this->notifier()->notified);
         $notified = $this->notifier()->notified[0];
-        $this->assertSame($this->bodyOf($response)['id'], $notified->id);
+        $this->assertSame($body['id'], $notified->id);
+        $this->assertSame($this->walletOf(self::PAYER), $notified->payerWalletId);
         $this->assertSame($this->walletOf(self::PAYEE), $notified->payeeWalletId);
         $this->assertSame(10050, $notified->amount->cents());
     }
@@ -403,6 +448,21 @@ final class TransferEndpointTest extends HttpTestCase
         $this->assertSame(self::PAYEE_BALANCE, $this->balanceOf(self::PAYEE));
         $this->assertSame(0, Db::table('transfers')->count());
         $this->assertSame(0, Db::table('ledger_entries')->whereNotNull('transfer_id')->count());
+        $this->assertSame(0, Db::table('outbox')->count());
+    }
+
+    private function drainOutbox(?DateTimeImmutable $now = null, int $maxAttempts = 8): DrainOutboxResult
+    {
+        $container = ApplicationContext::getContainer();
+
+        return (new DrainOutbox(
+            $container->get(Outbox::class),
+            $this->notifier(),
+            $container->get(LoggerInterface::class),
+            $maxAttempts,
+            10,
+            300,
+        ))->execute($now);
     }
 
     /**
