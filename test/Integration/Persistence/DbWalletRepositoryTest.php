@@ -79,4 +79,30 @@ final class DbWalletRepositoryTest extends IntegrationTestCase
 
         $this->assertSame(50000, $this->balanceOf($payeeWalletId));
     }
+
+    public function testListBalanceCentsByWalletIdReturnsEveryWalletBalance(): void
+    {
+        $aliceId = $this->insertUser('11111111111', 'common', 'Alice Ramos', 'alice@tally.test');
+        $brunoId = $this->insertUser('22222222222', 'common', 'Bruno Teixeira', 'bruno@tally.test');
+        $mercadoId = $this->insertUser('33333333333', 'merchant', 'Mercado Central', 'mercado@tally.test');
+
+        $aliceWalletId = $this->insertWallet($aliceId, 100000);
+        $brunoWalletId = $this->insertWallet($brunoId, 50000);
+        $mercadoWalletId = $this->insertWallet($mercadoId, 0);
+
+        $balances = (new DbWalletRepository())->listBalanceCentsByWalletId();
+
+        $this->assertSame(100000, $balances[$aliceWalletId]);
+        $this->assertSame(50000, $balances[$brunoWalletId]);
+        $this->assertSame(0, $balances[$mercadoWalletId]);
+        $this->assertCount(3, $balances);
+        $this->assertSame(
+            [
+                $aliceWalletId => 100000,
+                $brunoWalletId => 50000,
+                $mercadoWalletId => 0,
+            ],
+            $balances
+        );
+    }
 }

@@ -24,6 +24,7 @@ use App\Domain\Exception\TransferUnauthorized;
 use App\Domain\Exception\UserNotFound;
 use App\Domain\IdempotencyRecord;
 use App\Domain\Port\IdempotencyStore;
+use App\Domain\Port\Ledger;
 use App\Domain\Port\TransactionRunner;
 use App\Domain\Port\TransferAuthorizer;
 use App\Domain\Port\TransferNotifier;
@@ -62,6 +63,7 @@ final class TransferFunds
         private readonly TransferAuthorizer $authorizer,
         private readonly TransferNotifier $notifier,
         private readonly IdempotencyStore $idempotencyStore,
+        private readonly Ledger $ledger,
     ) {
     }
 
@@ -170,6 +172,15 @@ final class TransferFunds
                     $this->walletRepository->save($lockedPayee);
                     $persisted = $this->transferRepository->add($transfer);
 
+                    $this->ledger->appendTransferLegs(
+                        $this->newJournalId(),
+                        $persisted->id,
+                        $lockedPayer->id,
+                        $lockedPayee->id,
+                        $input->amount,
+                        $persisted->createdAt,
+                    );
+
                     $output = new TransferFundsOutput(
                         $persisted->id,
                         $payer->id,
@@ -274,6 +285,15 @@ final class TransferFunds
             'value' => sprintf('%d.%02d', intdiv($output->amount->cents(), 100), $output->amount->cents() % 100),
             'created_at' => $output->createdAt->format(DateTimeInterface::ATOM),
         ];
+    }
+
+    private function newJournalId(): string
+    {
+        $bytes = random_bytes(16);
+        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($bytes), 4));
     }
 
     private function userOrFail(int $id): User

@@ -26,6 +26,7 @@ abstract class IntegrationTestCase extends TestCase
     {
         parent::setUp();
 
+        Db::table('ledger_entries')->delete();
         Db::table('transfers')->delete();
         Db::table('wallets')->delete();
         Db::table('users')->delete();

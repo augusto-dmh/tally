@@ -59,4 +59,15 @@ final class DbWalletRepository implements WalletRepository
             'updated_at' => date('Y-m-d H:i:s'),
         ]);
     }
+
+    public function listBalanceCentsByWalletId(): array
+    {
+        $balances = [];
+
+        foreach (Db::table('wallets')->get(['id', 'balance_cents']) as $row) {
+            $balances[(int) $row->id] = (int) $row->balance_cents;
+        }
+
+        return $balances;
+    }
 }

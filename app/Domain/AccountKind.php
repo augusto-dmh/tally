@@ -9,8 +9,11 @@ declare(strict_types=1);
  * @contact  group@hyperf.io
  * @license  https://github.com/hyperf/hyperf/blob/master/LICENSE
  */
-use App\Command\LedgerReconcileCommand;
 
-return [
-    LedgerReconcileCommand::class,
-];
+namespace App\Domain;
+
+enum AccountKind: string
+{
+    case Wallet = 'wallet';
+    case SystemOpening = 'system_opening';
+}

@@ -24,13 +24,17 @@ use App\Domain\Exception\SelfTransferNotAllowed;
 use App\Domain\Exception\TransferUnauthorized;
 use App\Domain\Exception\UserNotFound;
 use App\Domain\IdempotencyRecord;
+use App\Domain\LedgerDirection;
 use App\Domain\Money;
 use App\Domain\Port\IdempotencyStore;
+use App\Domain\Port\TransferRepository;
+use App\Domain\Transfer;
 use App\Domain\User;
 use App\Domain\UserType;
 use App\Domain\Wallet;
 use DateTimeImmutable;
 use HyperfTest\Fake\FakeIdempotencyStore;
+use HyperfTest\Fake\FakeLedger;
 use HyperfTest\Fake\FakeTransactionRunner;
 use HyperfTest\Fake\FakeTransferAuthorizer;
 use HyperfTest\Fake\FakeTransferNotifier;
@@ -38,6 +42,7 @@ use HyperfTest\Fake\FakeTransferRepository;
 use HyperfTest\Fake\FakeUserRepository;
 use HyperfTest\Fake\FakeWalletRepository;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 /**
  * Seeded scenario shared by every test: user 1 is a common payer holding
@@ -68,6 +73,8 @@ class TransferFundsTest extends TestCase
 
     private FakeIdempotencyStore $idempotency;
 
+    private FakeLedger $ledger;
+
     private TransferFunds $transferFunds;
 
     protected function setUp(): void
@@ -88,6 +95,7 @@ class TransferFundsTest extends TestCase
         $this->notifier = new FakeTransferNotifier();
         $this->runner = new FakeTransactionRunner();
         $this->idempotency = new FakeIdempotencyStore();
+        $this->ledger = new FakeLedger();
 
         $this->transferFunds = new TransferFunds(
             $this->runner,
@@ -97,6 +105,7 @@ class TransferFundsTest extends TestCase
             $this->authorizer,
             $this->notifier,
             $this->idempotency,
+            $this->ledger,
         );
     }
 
@@ -128,6 +137,92 @@ class TransferFundsTest extends TestCase
 
         $this->assertSame(1, $this->runner->runs);
         $this->assertSame([1, 2], $this->wallets->forUpdateUserIds);
+        $this->assertTransferLegsPostedOnce(11, 22, 2550, $transfer->id);
+    }
+
+    /** LEDG-01: successful transfer posts opposing debit/credit legs once. */
+    public function testItPostsBalancedLedgerLegsOnSuccessfulTransfer(): void
+    {
+        $result = $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(2550)));
+
+        $this->assertSame(201, $result->statusCode);
+        $this->assertTransferLegsPostedOnce(11, 22, 2550, $this->transfers->added[0]->id);
+    }
+
+    /** LEDG-03: authorizer decline never reaches the money txn — no ledger append. */
+    public function testItDoesNotAppendLedgerLegsWhenAuthorizerDeclines(): void
+    {
+        $this->authorizer->authorizes = false;
+
+        $this->executeExpecting(TransferUnauthorized::class, new TransferFundsInput(1, 2, Money::fromCents(2550)));
+
+        $this->assertSame([], $this->ledger->entries);
+        $this->assertSame(0, $this->runner->runs);
+        $this->assertSame([], $this->transfers->added);
+    }
+
+    /** LEDG-08: keyed replay returns stored outcome without appending again. */
+    public function testItDoesNotAppendLedgerLegsOnKeyedReplay(): void
+    {
+        $first = $this->transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(2550),
+            'key-ledger-replay',
+            'hash-ledger-replay',
+        ));
+
+        $this->assertSame(201, $first->statusCode);
+        $this->assertCount(2, $this->ledger->entries);
+
+        $second = $this->transferFunds->execute(new TransferFundsInput(
+            1,
+            2,
+            Money::fromCents(2550),
+            'key-ledger-replay',
+            'hash-ledger-replay',
+        ));
+
+        $this->assertSame(201, $second->statusCode);
+        $this->assertSame($first->body, $second->body);
+        $this->assertCount(1, $this->transfers->added);
+        $this->assertCount(2, $this->ledger->entries);
+    }
+
+    /**
+     * LEDG-03: mid-txn failure before append leaves FakeLedger empty
+     * (FakeTransactionRunner has no ledger rollback coupling).
+     */
+    public function testItDoesNotLeaveLedgerEntriesWhenTransferPersistFailsMidTxn(): void
+    {
+        $transfers = new class implements TransferRepository {
+            public function add(Transfer $transfer): Transfer
+            {
+                throw new RuntimeException('transfer persist failed mid-txn');
+            }
+        };
+
+        $transferFunds = new TransferFunds(
+            $this->runner,
+            $this->users,
+            $this->wallets,
+            $transfers,
+            $this->authorizer,
+            $this->notifier,
+            $this->idempotency,
+            $this->ledger,
+        );
+
+        try {
+            $transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(2550)));
+            $this->fail('Expected RuntimeException from mid-txn transfer persist');
+        } catch (RuntimeException $thrown) {
+            $this->assertSame('transfer persist failed mid-txn', $thrown->getMessage());
+            $this->assertSame($thrown, $this->runner->thrown);
+        }
+
+        $this->assertSame([], $this->ledger->entries);
+        $this->assertSame(1, $this->runner->runs);
     }
 
     public function testItMovesMoneyToAMerchantPayee(): void
@@ -257,6 +352,7 @@ class TransferFundsTest extends TestCase
         $this->assertSeededBalances();
         $this->assertSame([], $this->transfers->added);
         $this->assertSame([], $this->notifier->notified);
+        $this->assertSame([], $this->ledger->entries);
     }
 
     /** CONC-04: notify failure after commit must not undo the money move. */
@@ -273,6 +369,7 @@ class TransferFundsTest extends TestCase
         $this->assertCount(1, $this->notifier->notified);
         $this->assertNull($this->runner->thrown);
         $this->assertSame(1, $this->runner->runs);
+        $this->assertTransferLegsPostedOnce(11, 22, 2550, $this->transfers->added[0]->id);
     }
 
     /** CONC-05: same key + body replays the stored terminal outcome. */
@@ -308,6 +405,7 @@ class TransferFundsTest extends TestCase
         $this->assertSame([], $this->authorizer->authorized);
         $this->assertSame([], $this->notifier->notified);
         $this->assertSame(0, $this->runner->runs);
+        $this->assertSame([], $this->ledger->entries);
     }
 
     /** CONC-05: a live success under a key is stored and replayed on retry. */
@@ -459,6 +557,7 @@ class TransferFundsTest extends TestCase
             $this->authorizer,
             $this->notifier,
             $store,
+            $this->ledger,
         );
 
         $result = $transferFunds->execute(new TransferFundsInput(
@@ -474,6 +573,7 @@ class TransferFundsTest extends TestCase
         $this->assertSeededBalances();
         $this->assertSame([], $this->transfers->added);
         $this->assertSame(0, $this->runner->runs);
+        $this->assertSame([], $this->ledger->entries);
     }
 
     /** Keyed insufficient-balance stores a terminal 422 for replay. */
@@ -603,6 +703,33 @@ class TransferFundsTest extends TestCase
         $this->assertSame([], $this->authorizer->authorized);
         $this->assertSame([], $this->notifier->notified);
         $this->assertSame(0, $this->runner->runs);
+        $this->assertSame([], $this->ledger->entries);
+    }
+
+    private function assertTransferLegsPostedOnce(
+        int $payerWalletId,
+        int $payeeWalletId,
+        int $amountCents,
+        int $transferId,
+    ): void {
+        $this->assertCount(2, $this->ledger->entries);
+
+        $debit = $this->ledger->entries[0];
+        $credit = $this->ledger->entries[1];
+
+        $this->assertSame($debit['journal_id'], $credit['journal_id']);
+        $this->assertMatchesRegularExpression(
+            '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/',
+            $debit['journal_id'],
+        );
+        $this->assertSame($transferId, $debit['transfer_id']);
+        $this->assertSame($transferId, $credit['transfer_id']);
+        $this->assertSame($payerWalletId, $debit['wallet_id']);
+        $this->assertSame($payeeWalletId, $credit['wallet_id']);
+        $this->assertSame(LedgerDirection::Debit, $debit['direction']);
+        $this->assertSame(LedgerDirection::Credit, $credit['direction']);
+        $this->assertSame($amountCents, $debit['amount_cents']);
+        $this->assertSame($amountCents, $credit['amount_cents']);
     }
 
     private function assertSeededBalances(): void

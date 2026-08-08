@@ -28,8 +28,10 @@ independent.
 
 ## Status
 
-Early — the transfer API is the first shipped slice. Architecture decisions are
-recorded in [`docs/adr/`](docs/adr/) as they are made (including
+Early — the transfer API is the first shipped slice, now backed by an append-only
+double-entry ledger that explains wallet balances
+([ADR-0005](docs/adr/0005-append-only-double-entry-ledger.md)). Architecture
+decisions are recorded in [`docs/adr/`](docs/adr/) as they are made (including
 [ADR-0003](docs/adr/0003-wallet-row-locks.md) row locks and
 [ADR-0004](docs/adr/0004-idempotency-key.md) idempotency); how AI is used in
 development is documented in [`AI_STRATEGY.md`](AI_STRATEGY.md).
@@ -46,7 +48,16 @@ docker compose exec hyperf-skeleton php bin/hyperf.php db:seed
 ```
 
 The seed creates three accounts: user `1` (Alice, R$ 1000,00), user `2` (Bruno,
-R$ 500,00), and merchant `3`, who can only receive.
+R$ 500,00), and merchant `3`, who can only receive. Non-zero wallets get opening
+ledger journals so balances are journal-explained from the start.
+
+Reconcile the ledger against wallet projections (read-only; exits `0` when clean,
+`1` on drift). While the app is up, `hyperf/crontab` runs the same command every
+five minutes:
+
+```bash
+docker compose exec hyperf-skeleton php bin/hyperf.php ledger:reconcile
+```
 
 Send a transfer:
 
