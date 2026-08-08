@@ -25,10 +25,14 @@ participate in a transfer, taken **inside** the money transaction only, in
 transfers.
 
 The authorizer runs **before** that transaction (fail-closed: decline or outage
-persists nothing). The notifier runs **after** commit (see the notify trade-off
-recorded in `AI_STRATEGY.md`). The transaction itself only locks, re-checks
-balances against locked rows, persists wallet balances and the transfer row, and
-(when present) inserts the idempotency success outcome.
+persists nothing). The notifier ran **after** commit at the time of this ADR
+(see the notify trade-off recorded in `AI_STRATEGY.md`). **Superseded in part by
+[ADR-0006](0006-transactional-outbox.md):** request-path post-commit notify is
+replaced by same-txn outbox enqueue and asynchronous drain; the short money
+transaction and “no HTTP on a held connection” intent here still stand. The
+transaction itself only locks, re-checks balances against locked rows, persists
+wallet balances and the transfer row, and (when present) inserts the
+idempotency success outcome.
 
 Alternatives considered:
 
