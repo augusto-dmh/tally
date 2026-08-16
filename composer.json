@@ -14,6 +14,7 @@
     "require": {
         "php": ">=8.2",
         "hyperf/cache": "~3.2.0",
+        "hyperf/circuit-breaker": "~3.2.0",
         "hyperf/command": "~3.2.0",
         "hyperf/config": "~3.2.0",
         "hyperf/crontab": "~3.2.0",
