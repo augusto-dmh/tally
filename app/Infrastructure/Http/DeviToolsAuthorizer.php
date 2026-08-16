@@ -22,7 +22,7 @@ use Throwable;
  * explicit decline (false), and unavailable (AuthorizerUnavailable) so a
  * resilient decorator can retry only outages.
  */
-final class DeviToolsAuthorizer
+final class DeviToolsAuthorizer implements AuthorizerAttempt
 {
     public const DEFAULT_BASE_URI = 'https://util.devi.tools';
 
