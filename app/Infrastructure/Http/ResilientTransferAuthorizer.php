@@ -12,7 +12,6 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Http;
 
-use App\Domain\Port\TransferAuthorizer;
 use App\Domain\Transfer;
 use Hyperf\CircuitBreaker\CircuitBreaker;
 use Hyperf\CircuitBreaker\CircuitBreakerFactory;
@@ -20,13 +19,15 @@ use Hyperf\CircuitBreaker\CircuitBreakerInterface;
 use Psr\Container\ContainerInterface;
 
 /**
- * TransferAuthorizer decorator: bounded retry on AuthorizerUnavailable and a
- * per-worker circuit breaker. Never uses Attempt::attempt() coin-flip.
+ * Per-provider AuthorizerAttempt: bounded retry on AuthorizerUnavailable and a
+ * per-worker circuit breaker. Returns bool only for clear or explicit decline;
+ * throws AuthorizerUnavailable when this provider cannot answer. Never uses
+ * Attempt::attempt() coin-flip.
  */
-final class ResilientTransferAuthorizer implements TransferAuthorizer
+final class ResilientTransferAuthorizer implements AuthorizerAttempt
 {
     public function __construct(
-        private readonly DeviToolsAuthorizer $inner,
+        private readonly AuthorizerAttempt $inner,
         private readonly CircuitBreakerFactory $breakerFactory,
         private readonly ContainerInterface $container,
         private readonly string $breakerName = 'transfer.authorizer',
@@ -39,13 +40,13 @@ final class ResilientTransferAuthorizer implements TransferAuthorizer
     ) {
     }
 
-    public function authorize(Transfer $transfer): bool
+    public function attempt(Transfer $transfer): bool
     {
         $breaker = $this->breaker();
 
         if ($breaker->state()->isOpen()) {
             if ($breaker->getDuration() < $this->duration) {
-                return false;
+                throw new AuthorizerUnavailable();
             }
             $breaker->halfOpen();
 
@@ -55,13 +56,13 @@ final class ResilientTransferAuthorizer implements TransferAuthorizer
         // Another request on this worker is already probing (or left half-open):
         // fail closed without a second upstream call.
         if ($breaker->state()->isHalfOpen()) {
-            return false;
+            throw new AuthorizerUnavailable();
         }
 
         for ($attempt = 1; $attempt <= $this->maxAttempts; ++$attempt) {
             try {
                 $cleared = $this->inner->attempt($transfer);
-            } catch (AuthorizerUnavailable) {
+            } catch (AuthorizerUnavailable $e) {
                 if ($attempt < $this->maxAttempts) {
                     $this->backoff($attempt - 1);
                     continue;
@@ -71,7 +72,7 @@ final class ResilientTransferAuthorizer implements TransferAuthorizer
                     $breaker->open();
                 }
 
-                return false;
+                throw $e;
             }
 
             if ($cleared) {
@@ -84,7 +85,7 @@ final class ResilientTransferAuthorizer implements TransferAuthorizer
             return false;
         }
 
-        return false;
+        throw new AuthorizerUnavailable();
     }
 
     /**
@@ -95,10 +96,10 @@ final class ResilientTransferAuthorizer implements TransferAuthorizer
     {
         try {
             $cleared = $this->inner->attempt($transfer);
-        } catch (AuthorizerUnavailable) {
+        } catch (AuthorizerUnavailable $e) {
             $breaker->open();
 
-            return false;
+            throw $e;
         }
 
         if ($cleared) {
