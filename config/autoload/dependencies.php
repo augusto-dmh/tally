@@ -19,6 +19,7 @@ use App\Domain\Port\TransferNotifier;
 use App\Domain\Port\TransferRepository;
 use App\Domain\Port\UserRepository;
 use App\Domain\Port\WalletRepository;
+use App\Infrastructure\Http\AuthorizerProviders;
 use App\Infrastructure\Http\DeviToolsAuthorizer;
 use App\Infrastructure\Http\DeviToolsNotifier;
 use App\Infrastructure\Http\FallbackTransferAuthorizer;
@@ -51,10 +52,7 @@ $bindings = [
     TransferAuthorizer::class => static function (ContainerInterface $container) {
         $defaults = (array) config('authorizer.defaults', []);
         $leaves = [];
-        foreach ((array) config('authorizer.providers', []) as $provider) {
-            if ((string) ($provider['base_uri'] ?? '') === '') {
-                continue;
-            }
+        foreach (AuthorizerProviders::usable((array) config('authorizer.providers', [])) as $provider) {
             $settings = array_merge($defaults, $provider);
             $leaves[] = new ResilientTransferAuthorizer(
                 new DeviToolsAuthorizer(
