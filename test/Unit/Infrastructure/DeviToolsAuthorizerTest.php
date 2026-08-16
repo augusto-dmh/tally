@@ -14,6 +14,7 @@ namespace HyperfTest\Unit\Infrastructure;
 
 use App\Domain\Money;
 use App\Domain\Transfer;
+use App\Infrastructure\Http\AuthorizerUnavailable;
 use App\Infrastructure\Http\DeviToolsAuthorizer;
 use DateTimeImmutable;
 use GuzzleHttp\Exception\ConnectException;
@@ -29,95 +30,119 @@ use PHPUnit\Framework\TestCase;
  */
 final class DeviToolsAuthorizerTest extends TestCase
 {
-    public function testAuthorizesWhenTheServiceClearsTheTransfer(): void
+    public function testClearsWhenTheServiceAuthorizesTheTransfer(): void
     {
         $handler = new MockHandler([
             new Response(200, [], '{"status":"success","data":{"authorization":true}}'),
         ]);
 
-        $authorized = $this->authorizerFor($handler)->authorize($this->transfer());
+        $cleared = $this->authorizerFor($handler)->attempt($this->transfer());
 
-        $this->assertTrue($authorized);
+        $this->assertTrue($cleared);
         $this->assertSame('GET', $handler->getLastRequest()->getMethod());
         $this->assertSame('https://util.devi.tools/api/v2/authorize', (string) $handler->getLastRequest()->getUri());
+        $this->assertSame(0, $handler->count());
     }
 
-    public function testDeclinesWhenTheServiceAnswersThatItDoesNotAuthorize(): void
+    public function testReturnsFalseOnExplicitDeclineWithoutThrowing(): void
     {
         $handler = new MockHandler([
             new Response(200, [], '{"status":"success","data":{"authorization":false}}'),
         ]);
 
-        $this->assertFalse($this->authorizerFor($handler)->authorize($this->transfer()));
+        $this->assertFalse($this->authorizerFor($handler)->attempt($this->transfer()));
+        $this->assertSame(0, $handler->count());
     }
 
-    public function testDeclinesOnTheForbiddenAnswerTheServiceSendsForARefusal(): void
+    public function testReturnsFalseOnTheForbiddenRefusalBodyWithoutThrowing(): void
     {
         $handler = new MockHandler([
             new Response(403, [], '{"status":"fail","data":{"authorization":false}}'),
         ]);
 
-        $this->assertFalse($this->authorizerFor($handler)->authorize($this->transfer()));
+        $this->assertFalse($this->authorizerFor($handler)->attempt($this->transfer()));
+        $this->assertSame(0, $handler->count());
     }
 
-    public function testFailsClosedWhenTheServiceBreaks(): void
+    public function testThrowsWhenTheServiceBreaks(): void
     {
         $handler = new MockHandler([
             new Response(500, [], 'Internal Server Error'),
         ]);
 
-        $this->assertFalse($this->authorizerFor($handler)->authorize($this->transfer()));
+        $this->expectException(AuthorizerUnavailable::class);
+
+        $this->authorizerFor($handler)->attempt($this->transfer());
     }
 
-    public function testFailsClosedWhenAnErrorStatusCarriesAnAuthorizingBody(): void
+    public function testThrowsWhenAnErrorStatusCarriesAnAuthorizingBody(): void
     {
         $handler = new MockHandler([
             new Response(503, [], '{"status":"success","data":{"authorization":true}}'),
         ]);
 
-        $this->assertFalse($this->authorizerFor($handler)->authorize($this->transfer()));
+        $this->expectException(AuthorizerUnavailable::class);
+
+        $this->authorizerFor($handler)->attempt($this->transfer());
     }
 
-    public function testFailsClosedOnASuccessStatusCarryingAnUnreadableBody(): void
+    public function testThrowsOnASuccessStatusCarryingAnUnreadableBody(): void
     {
         $handler = new MockHandler([
             new Response(200, [], '<html>we are down for maintenance</html>'),
         ]);
 
-        $this->assertFalse($this->authorizerFor($handler)->authorize($this->transfer()));
+        $this->expectException(AuthorizerUnavailable::class);
+
+        $this->authorizerFor($handler)->attempt($this->transfer());
     }
 
-    public function testFailsClosedOnASuccessStatusMissingTheAuthorizationField(): void
+    public function testThrowsOnASuccessStatusMissingTheAuthorizationField(): void
     {
         $handler = new MockHandler([
             new Response(200, [], '{"status":"success","data":{}}'),
         ]);
 
-        $this->assertFalse($this->authorizerFor($handler)->authorize($this->transfer()));
+        $this->expectException(AuthorizerUnavailable::class);
+
+        $this->authorizerFor($handler)->attempt($this->transfer());
     }
 
-    public function testFailsClosedWhenTheServiceCannotBeReached(): void
+    public function testThrowsWhenTheServiceCannotBeReached(): void
     {
         $handler = new MockHandler([
             new ConnectException('Connection refused', new Request('GET', 'https://util.devi.tools/api/v2/authorize')),
         ]);
 
-        $this->assertFalse($this->authorizerFor($handler)->authorize($this->transfer()));
+        $this->expectException(AuthorizerUnavailable::class);
+
+        $this->authorizerFor($handler)->attempt($this->transfer());
     }
 
-    public function testBoundsHowLongItWaitsForTheService(): void
+    public function testAppliesConfiguredTimeoutsToTheHttpClient(): void
     {
         $handler = new MockHandler([
             new Response(200, [], '{"status":"success","data":{"authorization":true}}'),
         ]);
         $factory = new RecordingClientFactory($handler);
 
-        (new DeviToolsAuthorizer($factory))->authorize($this->transfer());
+        (new DeviToolsAuthorizer($factory, DeviToolsAuthorizer::DEFAULT_BASE_URI, 4.5, 1.25))->attempt($this->transfer());
 
-        $this->assertArrayHasKey('timeout', $factory->options);
-        $this->assertArrayHasKey('connect_timeout', $factory->options);
-        $this->assertGreaterThan(0, $factory->options['timeout']);
-        $this->assertGreaterThan(0, $factory->options['connect_timeout']);
+        $this->assertSame(4.5, $factory->options['timeout']);
+        $this->assertSame(1.25, $factory->options['connect_timeout']);
+    }
+
+    public function testUsesDesignDefaultTimeoutsWhenNoneArePassed(): void
+    {
+        $handler = new MockHandler([
+            new Response(200, [], '{"status":"success","data":{"authorization":true}}'),
+        ]);
+        $factory = new RecordingClientFactory($handler);
+
+        (new DeviToolsAuthorizer($factory))->attempt($this->transfer());
+
+        $this->assertSame(5.0, $factory->options['timeout']);
+        $this->assertSame(2.0, $factory->options['connect_timeout']);
     }
 
     public function testAsksTheServiceConfiguredForTheEnvironment(): void
@@ -126,7 +151,7 @@ final class DeviToolsAuthorizerTest extends TestCase
             new Response(200, [], '{"status":"success","data":{"authorization":true}}'),
         ]);
 
-        (new DeviToolsAuthorizer(new RecordingClientFactory($handler), 'https://stub.tally.test'))->authorize($this->transfer());
+        (new DeviToolsAuthorizer(new RecordingClientFactory($handler), 'https://stub.tally.test'))->attempt($this->transfer());
 
         $this->assertSame('https://stub.tally.test/api/v2/authorize', (string) $handler->getLastRequest()->getUri());
     }

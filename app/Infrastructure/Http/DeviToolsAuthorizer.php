@@ -12,18 +12,17 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Http;
 
-use App\Domain\Port\TransferAuthorizer;
 use App\Domain\Transfer;
 use GuzzleHttp\Client;
 use Hyperf\Guzzle\ClientFactory;
 use Throwable;
 
 /**
- * Asks util.devi.tools whether a transfer may happen. Every answer that is not
- * an explicit authorization — a refusal, a broken service, an unreadable body,
- * an unreachable host — is a no.
+ * Single HTTP attempt against util.devi.tools. Distinguishes clear (true),
+ * explicit decline (false), and unavailable (AuthorizerUnavailable) so a
+ * resilient decorator can retry only outages.
  */
-final class DeviToolsAuthorizer implements TransferAuthorizer
+final class DeviToolsAuthorizer
 {
     public const DEFAULT_BASE_URI = 'https://util.devi.tools';
 
@@ -32,30 +31,47 @@ final class DeviToolsAuthorizer implements TransferAuthorizer
     public function __construct(
         ClientFactory $clientFactory,
         private readonly string $baseUri = self::DEFAULT_BASE_URI,
+        float $timeout = 5.0,
+        float $connectTimeout = 2.0,
     ) {
         $this->client = $clientFactory->create([
-            'timeout' => 5.0,
-            'connect_timeout' => 2.0,
+            'timeout' => $timeout,
+            'connect_timeout' => $connectTimeout,
             'http_errors' => false,
         ]);
     }
 
-    public function authorize(Transfer $transfer): bool
+    /**
+     * @return bool true when cleared; false on explicit decline
+     * @throws AuthorizerUnavailable when the service cannot answer
+     */
+    public function attempt(Transfer $transfer): bool
     {
         try {
             $response = $this->client->get($this->baseUri . '/api/v2/authorize');
-        } catch (Throwable) {
-            return false;
+        } catch (Throwable $e) {
+            throw new AuthorizerUnavailable('Authorizer request failed.', 0, $e);
         }
 
-        if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
-            return false;
-        }
-
+        $status = $response->getStatusCode();
         $body = json_decode((string) $response->getBody(), true);
 
-        return is_array($body)
+        if (is_array($body) && ($body['data']['authorization'] ?? null) === false) {
+            return false;
+        }
+
+        if ($status < 200 || $status >= 300) {
+            throw new AuthorizerUnavailable(sprintf('Authorizer returned HTTP %d.', $status));
+        }
+
+        if (
+            is_array($body)
             && ($body['status'] ?? null) === 'success'
-            && ($body['data']['authorization'] ?? null) === true;
+            && ($body['data']['authorization'] ?? null) === true
+        ) {
+            return true;
+        }
+
+        throw new AuthorizerUnavailable('Authorizer response was unreadable.');
     }
 }
