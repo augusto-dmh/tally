@@ -21,6 +21,7 @@ use App\Domain\Port\UserRepository;
 use App\Domain\Port\WalletRepository;
 use App\Infrastructure\Http\DeviToolsAuthorizer;
 use App\Infrastructure\Http\DeviToolsNotifier;
+use App\Infrastructure\Http\ResilientTransferAuthorizer;
 use App\Infrastructure\Persistence\DbIdempotencyStore;
 use App\Infrastructure\Persistence\DbLedger;
 use App\Infrastructure\Persistence\DbOutbox;
@@ -28,6 +29,7 @@ use App\Infrastructure\Persistence\DbTransactionRunner;
 use App\Infrastructure\Persistence\DbTransferRepository;
 use App\Infrastructure\Persistence\DbUserRepository;
 use App\Infrastructure\Persistence\DbWalletRepository;
+use Hyperf\CircuitBreaker\CircuitBreakerFactory;
 use Hyperf\Guzzle\ClientFactory;
 use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
@@ -45,9 +47,22 @@ $bindings = [
     Outbox::class => static fn () => new DbOutbox(
         (int) config('outbox.claim_lease_seconds', 60),
     ),
-    TransferAuthorizer::class => static fn (ContainerInterface $container) => new DeviToolsAuthorizer(
-        $container->get(ClientFactory::class),
-        env('AUTHORIZER_URL', DeviToolsAuthorizer::DEFAULT_BASE_URI),
+    TransferAuthorizer::class => static fn (ContainerInterface $container) => new ResilientTransferAuthorizer(
+        new DeviToolsAuthorizer(
+            $container->get(ClientFactory::class),
+            (string) config('authorizer.base_uri', DeviToolsAuthorizer::DEFAULT_BASE_URI),
+            (float) config('authorizer.timeout', 5.0),
+            (float) config('authorizer.connect_timeout', 2.0),
+        ),
+        $container->get(CircuitBreakerFactory::class),
+        $container,
+        (string) config('authorizer.breaker_name', 'transfer.authorizer'),
+        (int) config('authorizer.max_attempts', 3),
+        (int) config('authorizer.backoff_base_ms', 50),
+        (int) config('authorizer.backoff_cap_ms', 500),
+        (int) config('authorizer.fail_counter', 5),
+        (int) config('authorizer.success_counter', 1),
+        (float) config('authorizer.duration', 10.0),
     ),
     TransferNotifier::class => static fn (ContainerInterface $container) => new DeviToolsNotifier(
         $container->get(ClientFactory::class),
