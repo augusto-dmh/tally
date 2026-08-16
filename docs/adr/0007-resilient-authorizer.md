@@ -1,6 +1,6 @@
 # ADR-0007: Resilient authorizer (retry + per-worker circuit breaker)
 
-- Status: Accepted
+- Status: Accepted (production port composition superseded by [ADR-0008](0008-authorizer-provider-fallback.md); resilience remains)
 - Date: 2026-08-15
 
 ## Context
@@ -56,7 +56,7 @@ new status for unavailability.
 around the HTTP client. Testing still overrides the port with
 `FakeTransferAuthorizer` via `test/dependencies.php` when `APP_ENV=testing`.
 
-Not part of this decision: provider fallback, Redis-shared / cross-worker
+Not part of this decision: provider fallback (see [ADR-0008](0008-authorizer-provider-fallback.md)), Redis-shared / cross-worker
 breaker state, SAGA or compensation paths, and notifier hardening beyond
 ADR-0006.
 
