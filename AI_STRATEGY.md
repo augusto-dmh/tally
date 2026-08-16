@@ -20,6 +20,19 @@ acceptance stay human. Three habits structure the collaboration:
 
 Newest first. Only load-bearing interactions — routine completions are not logged.
 
+### 2026-08-15 — `hyperf/circuit-breaker` for authorizer resilience (accepted)
+Authorizer hardening needed a fail-closed trip after sustained unavailability,
+distinct from explicit decline (which must not open the circuit). The package
+arrives with this change because its in-process `CircuitBreaker` /
+`CircuitBreakerFactory` state machine (open / half-open / close + counters +
+duration) is driven programmatically from a `ResilientTransferAuthorizer`
+decorator — not via AOP on `TransferFunds`, and not via the annotation path's
+coin-flip half-open helpers, which cannot encode decline-vs-unavailable.
+Timeouts and retry knobs stay in config; public `403` /
+`transfer_unauthorized` is unchanged. Recorded as ADR-0007. Dependency
+discipline from 2026-08-02 holds: the require lands with the feature that needs
+it.
+
 ### 2026-08-08 — Transactional outbox for notify (accepted; closes 2026-08-04 gap)
 The 2026-08-04 post-commit best-effort path left an explicit deferred reliability
 gap: money could commit while notify was lost forever on crash or notifier
