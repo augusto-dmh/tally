@@ -13,14 +13,26 @@ declare(strict_types=1);
 use function Hyperf\Support\env;
 
 return [
-    'base_uri' => env('AUTHORIZER_URL', 'https://util.devi.tools'),
-    'timeout' => (float) env('AUTHORIZER_TIMEOUT', 5.0),
-    'connect_timeout' => (float) env('AUTHORIZER_CONNECT_TIMEOUT', 2.0),
-    'max_attempts' => 3,
-    'backoff_base_ms' => 50,
-    'backoff_cap_ms' => 500,
-    'fail_counter' => 5,
-    'success_counter' => 1,
-    'duration' => 10.0,
-    'breaker_name' => 'transfer.authorizer',
+    'defaults' => [
+        'timeout' => (float) env('AUTHORIZER_TIMEOUT', 5.0),
+        'connect_timeout' => (float) env('AUTHORIZER_CONNECT_TIMEOUT', 2.0),
+        'max_attempts' => 3,
+        'backoff_base_ms' => 50,
+        'backoff_cap_ms' => 500,
+        'fail_counter' => 5,
+        'success_counter' => 1,
+        'duration' => 10.0,
+    ],
+    'providers' => [
+        [
+            'name' => 'primary',
+            'base_uri' => env('AUTHORIZER_URL', 'https://util.devi.tools'),
+            'breaker_name' => 'transfer.authorizer.primary',
+        ],
+        [
+            'name' => 'fallback',
+            'base_uri' => env('AUTHORIZER_FALLBACK_URL', ''),
+            'breaker_name' => 'transfer.authorizer.fallback',
+        ],
+    ],
 ];
