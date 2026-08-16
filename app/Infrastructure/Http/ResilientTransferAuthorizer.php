@@ -48,6 +48,14 @@ final class ResilientTransferAuthorizer implements TransferAuthorizer
                 return false;
             }
             $breaker->halfOpen();
+
+            return $this->probe($breaker, $transfer);
+        }
+
+        // Another request on this worker is already probing (or left half-open):
+        // fail closed without a second upstream call.
+        if ($breaker->state()->isHalfOpen()) {
+            return false;
         }
 
         for ($attempt = 1; $attempt <= $this->maxAttempts; ++$attempt) {
@@ -72,14 +80,34 @@ final class ResilientTransferAuthorizer implements TransferAuthorizer
                 return true;
             }
 
-            // Explicit decline: never bump failCounter. Half-open decline means
-            // upstream is reachable → breaker success, still deny the transfer.
-            if ($breaker->state()->isHalfOpen()) {
-                $this->recordSuccess($breaker);
-            }
+            // Explicit decline: never bump failCounter; never retry.
+            return false;
+        }
+
+        return false;
+    }
+
+    /**
+     * Exactly one deterministic half-open probe. Unavailable reopens immediately
+     * (ignore fail_counter). Decline counts as reachable success for the breaker.
+     */
+    private function probe(CircuitBreakerInterface $breaker, Transfer $transfer): bool
+    {
+        try {
+            $cleared = $this->inner->attempt($transfer);
+        } catch (AuthorizerUnavailable) {
+            $breaker->open();
 
             return false;
         }
+
+        if ($cleared) {
+            $this->recordSuccess($breaker);
+
+            return true;
+        }
+
+        $this->recordSuccess($breaker);
 
         return false;
     }

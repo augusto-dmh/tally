@@ -146,22 +146,30 @@ final class ResilientTransferAuthorizerTest extends TestCase
 
     public function testAuthz06HalfOpenUnavailableReopens(): void
     {
+        $unavailable = static fn () => new ConnectException(
+            'Connection refused',
+            new Request('GET', 'https://util.devi.tools/api/v2/authorize'),
+        );
+        // Production-like knobs: one probe must reopen even when fail_counter is 5
+        // and max_attempts is 3 — do not rely on threshold 1 to make reopen tautological.
         $handler = new MockHandler([
-            new ConnectException('Connection refused', new Request('GET', 'https://util.devi.tools/api/v2/authorize')),
+            $unavailable(),
+            $unavailable(),
+            $unavailable(),
         ]);
         $breaker = new FakeCircuitBreaker();
         $breaker->open();
         $authorizer = $this->resilient(
             $handler,
             $breaker,
-            maxAttempts: 1,
-            failCounterThreshold: 1,
+            maxAttempts: 3,
+            failCounterThreshold: 5,
             duration: 0.0,
         );
 
         $this->assertFalse($authorizer->authorize($this->transfer()));
         $this->assertTrue($breaker->state()->isOpen());
-        $this->assertSame(0, $handler->count());
+        $this->assertSame(2, $handler->count(), 'half-open must be a single probe, not the retry loop');
     }
 
     public function testAuthz06HalfOpenDeclineClosesAsReachableSuccess(): void
@@ -177,6 +185,20 @@ final class ResilientTransferAuthorizerTest extends TestCase
         $this->assertTrue($breaker->state()->isClose());
         $this->assertSame(0, $breaker->getFailCounter());
         $this->assertSame(0, $handler->count());
+    }
+
+    public function testHalfOpenSiblingsFailClosedWithoutUpstream(): void
+    {
+        $handler = new MockHandler([
+            new Response(200, [], '{"status":"success","data":{"authorization":true}}'),
+        ]);
+        $breaker = new FakeCircuitBreaker();
+        $breaker->halfOpen();
+        $authorizer = $this->resilient($handler, $breaker);
+
+        $this->assertFalse($authorizer->authorize($this->transfer()));
+        $this->assertSame(1, $handler->count(), 'in-flight / leftover half-open must not call upstream');
+        $this->assertTrue($breaker->state()->isHalfOpen());
     }
 
     public function testDoesNotCallBreakerAttemptCoinFlip(): void
