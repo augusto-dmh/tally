@@ -20,6 +20,23 @@ acceptance stay human. Three habits structure the collaboration:
 
 Newest first. Only load-bearing interactions — routine completions are not logged.
 
+### 2026-08-16 — Authorizer provider-fallback chain (accepted)
+A second DeviTools-compatible URI needed to clear transfers when the primary
+cannot answer, without shopping an explicit decline or widening the domain
+port. Production `TransferAuthorizer` is now `FallbackTransferAuthorizer`: a
+config-ordered chain of ADR-0007 `attempt()` leaves. Each leaf still owns
+timeouts, retry-on-unavailable, and a uniquely named per-worker breaker; it
+returns `bool` only for clear/decline and throws `AuthorizerUnavailable` on
+open, leftover half-open, exhaust, or unavailable probe. Throw rather than
+inspect breaker state: decline and exhaust both used to look like `false`,
+so the chain could not tell "do not shop this no" from "try the next URI."
+Decline stays terminal for the same reason — another vendor must not
+overturn a parsed refusal. Advance only on unavailable. Empty
+`AUTHORIZER_FALLBACK_URL` keeps chain length 1. Public `403` /
+`transfer_unauthorized` is unchanged. Recorded as ADR-0008; ADR-0007
+resilience remains on each leaf. Out of this decision: SAGA, Redis-shared
+breaker, distinct outage status, second vendor protocol.
+
 ### 2026-08-15 — `hyperf/circuit-breaker` for authorizer resilience (accepted)
 Authorizer hardening needed a fail-closed trip after sustained unavailability,
 distinct from explicit decline (which must not open the circuit). The package

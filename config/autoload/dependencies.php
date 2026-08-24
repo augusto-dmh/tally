@@ -19,8 +19,10 @@ use App\Domain\Port\TransferNotifier;
 use App\Domain\Port\TransferRepository;
 use App\Domain\Port\UserRepository;
 use App\Domain\Port\WalletRepository;
+use App\Infrastructure\Http\AuthorizerProviders;
 use App\Infrastructure\Http\DeviToolsAuthorizer;
 use App\Infrastructure\Http\DeviToolsNotifier;
+use App\Infrastructure\Http\FallbackTransferAuthorizer;
 use App\Infrastructure\Http\ResilientTransferAuthorizer;
 use App\Infrastructure\Persistence\DbIdempotencyStore;
 use App\Infrastructure\Persistence\DbLedger;
@@ -47,23 +49,32 @@ $bindings = [
     Outbox::class => static fn () => new DbOutbox(
         (int) config('outbox.claim_lease_seconds', 60),
     ),
-    TransferAuthorizer::class => static fn (ContainerInterface $container) => new ResilientTransferAuthorizer(
-        new DeviToolsAuthorizer(
-            $container->get(ClientFactory::class),
-            (string) config('authorizer.base_uri', DeviToolsAuthorizer::DEFAULT_BASE_URI),
-            (float) config('authorizer.timeout', 5.0),
-            (float) config('authorizer.connect_timeout', 2.0),
-        ),
-        $container->get(CircuitBreakerFactory::class),
-        $container,
-        (string) config('authorizer.breaker_name', 'transfer.authorizer'),
-        (int) config('authorizer.max_attempts', 3),
-        (int) config('authorizer.backoff_base_ms', 50),
-        (int) config('authorizer.backoff_cap_ms', 500),
-        (int) config('authorizer.fail_counter', 5),
-        (int) config('authorizer.success_counter', 1),
-        (float) config('authorizer.duration', 10.0),
-    ),
+    TransferAuthorizer::class => static function (ContainerInterface $container) {
+        $defaults = (array) config('authorizer.defaults', []);
+        $leaves = [];
+        foreach (AuthorizerProviders::usable((array) config('authorizer.providers', [])) as $provider) {
+            $settings = array_merge($defaults, $provider);
+            $leaves[] = new ResilientTransferAuthorizer(
+                new DeviToolsAuthorizer(
+                    $container->get(ClientFactory::class),
+                    (string) $settings['base_uri'],
+                    (float) ($settings['timeout'] ?? 5.0),
+                    (float) ($settings['connect_timeout'] ?? 2.0),
+                ),
+                $container->get(CircuitBreakerFactory::class),
+                $container,
+                (string) ($settings['breaker_name'] ?? 'transfer.authorizer.primary'),
+                (int) ($settings['max_attempts'] ?? 3),
+                (int) ($settings['backoff_base_ms'] ?? 50),
+                (int) ($settings['backoff_cap_ms'] ?? 500),
+                (int) ($settings['fail_counter'] ?? 5),
+                (int) ($settings['success_counter'] ?? 1),
+                (float) ($settings['duration'] ?? 10.0),
+            );
+        }
+
+        return new FallbackTransferAuthorizer($leaves);
+    },
     TransferNotifier::class => static fn (ContainerInterface $container) => new DeviToolsNotifier(
         $container->get(ClientFactory::class),
         env('NOTIFIER_URL', DeviToolsNotifier::DEFAULT_BASE_URI),
