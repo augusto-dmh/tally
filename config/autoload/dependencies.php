@@ -11,6 +11,7 @@ declare(strict_types=1);
  */
 use App\Application\DrainOutbox;
 use App\Domain\Port\IdempotencyStore;
+use App\Domain\Port\InFlightTransfer;
 use App\Domain\Port\Ledger;
 use App\Domain\Port\Outbox;
 use App\Domain\Port\TransactionRunner;
@@ -20,6 +21,7 @@ use App\Domain\Port\TransferRepository;
 use App\Domain\Port\UserRepository;
 use App\Domain\Port\WalletRepository;
 use App\Infrastructure\Http\AuthorizerProviders;
+use App\Infrastructure\Http\ContextInFlightTransfer;
 use App\Infrastructure\Http\DeviToolsAuthorizer;
 use App\Infrastructure\Http\DeviToolsNotifier;
 use App\Infrastructure\Http\FallbackTransferAuthorizer;
@@ -46,6 +48,7 @@ $bindings = [
     TransactionRunner::class => DbTransactionRunner::class,
     IdempotencyStore::class => DbIdempotencyStore::class,
     Ledger::class => DbLedger::class,
+    InFlightTransfer::class => ContextInFlightTransfer::class,
     Outbox::class => static fn () => new DbOutbox(
         (int) config('outbox.claim_lease_seconds', 60),
     ),

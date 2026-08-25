@@ -15,6 +15,7 @@ namespace HyperfTest\Feature;
 use App\Application\DrainOutbox;
 use App\Application\DrainOutboxResult;
 use App\Domain\LedgerDirection;
+use App\Domain\Port\InFlightTransfer;
 use App\Domain\Port\Outbox;
 use App\Domain\Port\TransferAuthorizer;
 use App\Domain\Port\TransferNotifier;
@@ -25,6 +26,7 @@ use Hyperf\DbConnection\Db;
 use Hyperf\Testing\Client;
 use HyperfTest\Fake\FakeTransferAuthorizer;
 use HyperfTest\Fake\FakeTransferNotifier;
+use HyperfTest\Fake\RecordingInFlightTransfer;
 use HyperfTest\HttpTestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Psr\Http\Message\ResponseInterface;
@@ -83,6 +85,7 @@ final class TransferEndpointTest extends HttpTestCase
         $this->authorizer()->authorized = [];
         $this->notifier()->fails = false;
         $this->notifier()->notified = [];
+        $this->inFlightTransfer()->reset();
     }
 
     public function testMovesTheMoneyAndAnswersWithTheStoredTransfer(): void
@@ -261,6 +264,74 @@ final class TransferEndpointTest extends HttpTestCase
         ]);
 
         $this->assertRejected($response, 422, 'invalid_request');
+    }
+
+    public function testRecordsTheParsedPartiesOnTheInFlightSlot(): void
+    {
+        $response = $this->postTransfer(['value' => 100.50, 'payer' => self::PAYER, 'payee' => self::PAYEE]);
+
+        $this->assertSame(201, $response->getStatusCode());
+        $recorded = $this->inFlightTransfer()->get();
+        $this->assertNotNull($recorded);
+        $this->assertSame(self::PAYER, $recorded->payerId);
+        $this->assertSame(self::PAYEE, $recorded->payeeId);
+    }
+
+    public function testRecordsTheParsedPartiesWhenTheTransferIsRefused(): void
+    {
+        $response = $this->postTransfer(['value' => '1000.01', 'payer' => self::PAYER, 'payee' => self::PAYEE]);
+
+        $this->assertRejected($response, 422, 'insufficient_balance');
+        $recorded = $this->inFlightTransfer()->get();
+        $this->assertNotNull($recorded);
+        $this->assertSame(self::PAYER, $recorded->payerId);
+        $this->assertSame(self::PAYEE, $recorded->payeeId);
+    }
+
+    public function testRecordsTheParsedPartiesWhenTheValueIsUnusable(): void
+    {
+        $response = $this->postTransfer(['payer' => self::PAYER, 'payee' => self::PAYEE]);
+
+        $this->assertRejected($response, 422, 'invalid_request');
+        $recorded = $this->inFlightTransfer()->get();
+        $this->assertNotNull($recorded);
+        $this->assertSame(self::PAYER, $recorded->payerId);
+        $this->assertSame(self::PAYEE, $recorded->payeeId);
+    }
+
+    public function testLeavesTheInFlightSlotEmptyWhenTheBodyIsNotJson(): void
+    {
+        $response = $this->request('POST', '/transfers', [
+            'headers' => ['Content-Type' => 'application/json'],
+            'form_params' => ['value' => 10.00, 'payer' => self::PAYER, 'payee' => self::PAYEE],
+        ]);
+
+        $this->assertRejected($response, 422, 'invalid_request');
+        $this->assertNull($this->inFlightTransfer()->get());
+        $this->assertSame([], $this->inFlightTransfer()->recordedSets());
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    #[DataProvider('unusablePartyProvider')]
+    public function testLeavesTheInFlightSlotEmptyWhenAPartyIsNotAnInteger($payload): void
+    {
+        $response = $this->postTransfer($payload);
+
+        $this->assertRejected($response, 422, 'invalid_request');
+        $this->assertNull($this->inFlightTransfer()->get());
+        $this->assertSame([], $this->inFlightTransfer()->recordedSets());
+    }
+
+    public static function unusablePartyProvider(): array
+    {
+        return [
+            'payer missing' => [['value' => 10.00, 'payee' => self::PAYEE]],
+            'payee missing' => [['value' => 10.00, 'payer' => self::PAYER]],
+            'payer not an id' => [['value' => 10.00, 'payer' => 'alice', 'payee' => self::PAYEE]],
+            'payee not an id' => [['value' => 10.00, 'payer' => self::PAYER, 'payee' => 2.5]],
+        ];
     }
 
     public function testAnswersNotFoundForAPayerWhoDoesNotExist(): void
@@ -493,6 +564,11 @@ final class TransferEndpointTest extends HttpTestCase
     private function notifier(): FakeTransferNotifier
     {
         return ApplicationContext::getContainer()->get(TransferNotifier::class);
+    }
+
+    private function inFlightTransfer(): RecordingInFlightTransfer
+    {
+        return ApplicationContext::getContainer()->get(InFlightTransfer::class);
     }
 
     private function balanceOf(int $userId): int

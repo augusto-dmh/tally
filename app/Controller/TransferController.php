@@ -15,6 +15,7 @@ namespace App\Controller;
 use App\Application\TransferFunds;
 use App\Application\TransferFundsInput;
 use App\Domain\Money;
+use App\Domain\Port\InFlightTransfer;
 use Psr\Http\Message\ResponseInterface;
 
 /**
@@ -24,8 +25,10 @@ use Psr\Http\Message\ResponseInterface;
  */
 class TransferController extends AbstractController
 {
-    public function __construct(private readonly TransferFunds $transferFunds)
-    {
+    public function __construct(
+        private readonly TransferFunds $transferFunds,
+        private readonly InFlightTransfer $inFlightTransfer,
+    ) {
     }
 
     public function store(): ResponseInterface
@@ -47,6 +50,8 @@ class TransferController extends AbstractController
         if (! is_int($payee)) {
             return $this->unusable('The payee must be given as a user id.');
         }
+
+        $this->inFlightTransfer->set($payer, $payee);
 
         if (! is_numeric($value)) {
             return $this->unusable('The value must be given as an amount in reais.');
