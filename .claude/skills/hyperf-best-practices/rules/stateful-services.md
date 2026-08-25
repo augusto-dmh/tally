@@ -30,6 +30,25 @@ class TransferService
 }
 ```
 
+**Incorrect — last writer wins (`PropertyInFlightTransfer`):**
+
+```php
+final class PropertyInFlightTransfer implements InFlightTransfer
+{
+    private ?InFlightTransferParties $current = null;
+
+    public function set(int $payerId, int $payeeId): void
+    {
+        $this->current = new InFlightTransferParties($payerId, $payeeId);
+    }
+
+    public function get(): ?InFlightTransferParties
+    {
+        return $this->current; // one slot, N concurrent requests
+    }
+}
+```
+
 **Correct:**
 
 ```php
@@ -46,6 +65,28 @@ class TransferService
         // per-request data flows through parameters and locals only
         $this->authorizer->authorize($request);
         return $this->execute($request->payerId());
+    }
+}
+```
+
+**Correct — coroutine Context (`ContextInFlightTransfer`):**
+
+```php
+use Hyperf\Context\Context;
+
+final class ContextInFlightTransfer implements InFlightTransfer
+{
+    public function set(int $payerId, int $payeeId): void
+    {
+        Context::set(
+            InFlightTransferParties::class,
+            new InFlightTransferParties($payerId, $payeeId),
+        );
+    }
+
+    public function get(): ?InFlightTransferParties
+    {
+        return Context::get(InFlightTransferParties::class);
     }
 }
 ```

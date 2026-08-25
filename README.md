@@ -24,7 +24,8 @@ later provider. An open or exhausted primary can still clear via a configured
 secondary. The port fails closed as public `403` / `transfer_unauthorized` —
 no money, no outbox row — when a provider declines or every usable provider
 cannot answer. An empty secondary URI keeps the single-upstream Compose story
-(chain length 1). A background relay (and
+(chain length 1). In-flight payer and payee user ids are isolated per request
+coroutine in Context, not on shared service properties. A background relay (and
 optional `outbox:drain` CLI) delivers the recipient notification asynchronously
 — at-least-once, not exactly-once. Money is integer cents end to end — no
 floating point anywhere near an amount. Every business rule answers with a
@@ -43,7 +44,9 @@ double-entry ledger that explains wallet balances
 transactional outbox for transfer notification
 ([ADR-0006](docs/adr/0006-transactional-outbox.md)), and a resilient authorizer
 ([ADR-0007](docs/adr/0007-resilient-authorizer.md)) with a provider-fallback
-chain ([ADR-0008](docs/adr/0008-authorizer-provider-fallback.md)). Architecture decisions are
+chain ([ADR-0008](docs/adr/0008-authorizer-provider-fallback.md)), and
+request-scoped in-flight parties
+([ADR-0009](docs/adr/0009-request-scoped-in-flight-parties.md)). Architecture decisions are
 recorded in [`docs/adr/`](docs/adr/) as they are made (including
 [ADR-0003](docs/adr/0003-wallet-row-locks.md) row locks and
 [ADR-0004](docs/adr/0004-idempotency-key.md) idempotency); how AI is used in
