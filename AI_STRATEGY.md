@@ -20,6 +20,20 @@ acceptance stay human. Three habits structure the collaboration:
 
 Newest first. Only load-bearing interactions — routine completions are not logged.
 
+### 2026-08-24 — Request-scoped in-flight parties (accepted)
+Request-derived payer and payee user ids must not live on container service
+properties or statics: Hyperf resolves those classes once per worker, so
+concurrent coroutines last-writer-win. Production `InFlightTransfer` is
+`ContextInFlightTransfer` — coroutine `Context` keyed by
+`InFlightTransferParties`. The HTTP edge writes after a successful integer
+parse; unusable JSON never writes. `TransferFunds` stays argument-driven
+and does not read the slot. Isolation is the concurrent unit proof:
+Context keeps each pair; the same assertions fail on a property store.
+Public `POST /transfers` is unchanged. Recorded as ADR-0009. Out of this
+decision: child-context copy / `go()` inheritance, OpenTelemetry /
+metrics, k6, SAGA, Redis-shared breaker, wallet-read API / auth / request
+principal, amount or idempotency in the slot.
+
 ### 2026-08-16 — Authorizer provider-fallback chain (accepted)
 A second DeviTools-compatible URI needed to clear transfers when the primary
 cannot answer, without shopping an explicit decline or widening the domain
