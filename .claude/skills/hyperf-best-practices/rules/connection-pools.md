@@ -59,6 +59,36 @@ Db::transaction(function () use ($transfer) {   // transaction = DB work only
 $this->events->dispatchAfterCommit($transfer);  // side effects after commit
 ```
 
+### Measured hold vs outside (MySQL)
+
+A dedicated test-only pool (`pool_exhaustion_probe`, `max_connections` 1,
+`wait_timeout` 0.2) with two `Parallel` children. Production
+`databases.php` is not the venue.
+
+**Hold — exhausts** (open transaction across slow work):
+
+```php
+// A: beginTransaction; select 1; rendezvous; Coroutine::sleep(0.5); select 1; commit
+// B: after A is holding, beginTransaction
+// B throws RuntimeException:
+// "Connection pool exhausted. Cannot establish new connection before wait_timeout."
+```
+
+**Outside — does not exhaust** (same knobs; sleep with no borrowed connection):
+
+```php
+Coroutine::sleep(0.5);                          // no connection held
+Db::connection($probe)->transaction(function ($db) {
+    $db->select('select 1');                    // short txn only
+});
+```
+
+Production `TransferFunds` matches the Correct shape: `authorize` then
+`TransactionRunner::run` (money + outbox enqueue only). Production
+`DrainOutbox` claims, then `notify` after `claimDue` returns — notifier HTTP
+is not inside the claim transaction. See
+[ADR-0010](../../../../docs/adr/0010-mysql-pool-exhaustion.md).
+
 ## Connections return at coroutine end — but don't lean on it
 
 The framework releases a borrowed connection when the coroutine finishes. Inside

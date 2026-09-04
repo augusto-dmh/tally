@@ -20,6 +20,19 @@ acceptance stay human. Three habits structure the collaboration:
 
 Newest first. Only load-bearing interactions — routine completions are not logged.
 
+### 2026-08-28 — MySQL pool-exhaustion incident (accepted)
+A coroutine that holds a borrowed MySQL connection across slow work exhausts
+a finite per-worker pool (`Connection pool exhausted. Cannot establish new
+connection before wait_timeout.`). Production already keeps authorizer HTTP
+outside `TransactionRunner::run` and notifier HTTP outside `claimDue`
+(ADR-0003 / ADR-0006); those call orders are now measured (fake in-txn
+spies plus a dedicated test-only tiny pool). Production pool knobs and
+application behavior do not change. Public `POST /transfers` is unchanged.
+Recorded as ADR-0010; `connection-pools` grows the hold-vs-outside
+snippet. Out of this decision: Guzzle / Redis pools, `go()` / child-context
+copy, blocking I/O, `max_request`, k6, SAGA, pool retune, a production
+`TransactionRunner` guard, distinct outage HTTP codes.
+
 ### 2026-08-24 — Request-scoped in-flight parties (accepted)
 Request-derived payer and payee user ids must not live on container service
 properties or statics: Hyperf resolves those classes once per worker, so

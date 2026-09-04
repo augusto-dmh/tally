@@ -61,6 +61,53 @@ class DrainOutboxTest extends TestCase
         $this->assertSame(2550, $notifier->notified[0]->amount->cents());
     }
 
+    /** POOL-04: notify is not invoked while Outbox::claimDue is still claiming. */
+    public function testItDoesNotNotifyWhileTheClaimTransactionIsOpen(): void
+    {
+        $outbox = new FakeOutbox();
+        $notifier = new FakeTransferNotifier();
+        $notifier->outbox = $outbox;
+        $now = new DateTimeImmutable('2026-08-08T12:00:00+00:00');
+        $outbox->enqueue(
+            OutboxEventType::TransferCompleted->value,
+            42,
+            [
+                'transfer_id' => 42,
+                'payer_wallet_id' => 11,
+                'payee_wallet_id' => 22,
+                'amount_cents' => 2550,
+            ],
+            $now,
+        );
+
+        $result = (new DrainOutbox($outbox, $notifier, new NullLogger(), 8, 10, 300))
+            ->execute($now);
+
+        $this->assertSame(1, $result->done);
+        $this->assertSame(1, $outbox->peakInClaim);
+        $this->assertSame(0, $notifier->notifyWhileClaiming);
+        $this->assertCount(1, $notifier->notified);
+        $this->assertFalse($outbox->inClaim);
+    }
+
+    /** POOL-04: empty claim does not call notify. */
+    public function testEmptyClaimDoesNotNotify(): void
+    {
+        $outbox = new FakeOutbox();
+        $notifier = new FakeTransferNotifier();
+        $notifier->outbox = $outbox;
+
+        $result = (new DrainOutbox($outbox, $notifier, new NullLogger(), 8, 10, 300))
+            ->execute(new DateTimeImmutable('2026-08-08T12:00:00+00:00'));
+
+        $this->assertSame(0, $result->processed);
+        $this->assertSame(0, $result->done);
+        $this->assertSame([], $notifier->notified);
+        $this->assertSame(0, $notifier->notifyWhileClaiming);
+        $this->assertSame(1, $outbox->peakInClaim);
+        $this->assertFalse($outbox->inClaim);
+    }
+
     public function testNotifyFailureRetriesWithBackoff(): void
     {
         $outbox = new FakeOutbox();

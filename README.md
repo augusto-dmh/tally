@@ -16,7 +16,8 @@ only receive — and treats it with production seriousness.
 `POST /transfers` executes a wallet-to-wallet transfer: validated against
 balance and user type, cleared by an external authorizer before money moves,
 executed under row locks in a short database transaction that also enqueues a
-durable transfer-completed outbox intent. The authorizer path is a
+durable transfer-completed outbox intent. Authorizer and notifier HTTP do
+not run on a held pooled connection. The authorizer path is a
 config-ordered chain of providers. Each provider uses config-driven timeouts,
 bounded retry on unavailability only, and its own fail-closed per-worker
 circuit breaker; explicit declines are not retried and do not advance to a
@@ -46,7 +47,9 @@ transactional outbox for transfer notification
 ([ADR-0007](docs/adr/0007-resilient-authorizer.md)) with a provider-fallback
 chain ([ADR-0008](docs/adr/0008-authorizer-provider-fallback.md)), and
 request-scoped in-flight parties
-([ADR-0009](docs/adr/0009-request-scoped-in-flight-parties.md)). Architecture decisions are
+([ADR-0009](docs/adr/0009-request-scoped-in-flight-parties.md)), and the
+measured MySQL pool-exhaustion incident
+([ADR-0010](docs/adr/0010-mysql-pool-exhaustion.md)). Architecture decisions are
 recorded in [`docs/adr/`](docs/adr/) as they are made (including
 [ADR-0003](docs/adr/0003-wallet-row-locks.md) row locks and
 [ADR-0004](docs/adr/0004-idempotency-key.md) idempotency); how AI is used in

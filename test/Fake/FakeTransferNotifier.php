@@ -20,11 +20,19 @@ final class FakeTransferNotifier implements TransferNotifier
 {
     public bool $fails = false;
 
+    public int $notifyWhileClaiming = 0;
+
+    public ?FakeOutbox $outbox = null;
+
     /** @var array<int, Transfer> */
     public array $notified = [];
 
     public function notify(Transfer $transfer): void
     {
+        if ($this->outbox?->inClaim === true) {
+            ++$this->notifyWhileClaiming;
+        }
+
         $this->notified[] = $transfer;
 
         if ($this->fails) {
