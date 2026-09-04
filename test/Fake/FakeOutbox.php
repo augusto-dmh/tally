@@ -38,6 +38,8 @@ final class FakeOutbox implements Outbox
 
     public bool $inClaim = false;
 
+    public int $peakInClaim = 0;
+
     private int $nextId = 1;
 
     public function enqueue(
@@ -72,6 +74,9 @@ final class FakeOutbox implements Outbox
     public function claimDue(int $limit, DateTimeImmutable $now): array
     {
         $this->inClaim = true;
+        if ($this->inClaim) {
+            $this->peakInClaim = 1;
+        }
 
         try {
             $claimed = [];

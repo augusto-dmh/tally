@@ -283,6 +283,7 @@ class TransferFundsTest extends TestCase
         $result = $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(2550)));
 
         $this->assertSame(201, $result->statusCode);
+        $this->assertSame(1, $this->runner->peakInRun);
         $this->assertSame(0, $this->authorizer->authorizeWhileInRun);
         $this->assertSame(1, $this->runner->runs);
         $this->assertCount(1, $this->authorizer->authorized);
@@ -299,6 +300,7 @@ class TransferFundsTest extends TestCase
 
         $this->assertSame(0, $this->authorizer->authorizeWhileInRun);
         $this->assertSame(0, $this->runner->runs);
+        $this->assertSame(0, $this->runner->peakInRun);
         $this->assertCount(1, $this->authorizer->authorized);
         $this->assertFalse($this->runner->inRun);
     }

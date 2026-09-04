@@ -53,14 +53,16 @@ final class MysqlPoolExhaustionTest extends IntegrationTestCase
         $release = new Channel(1);
         $parallel = new Parallel(2);
 
-        $parallel->add(function () use ($holding, $release): string {
+        $parallel->add(function () use ($holding, $release): array {
             $open = false;
             $db = Db::connection(self::PROBE);
+            $transactionLevelAtHold = 0;
 
             try {
                 $db->beginTransaction();
                 $open = true;
                 $db->select('select 1');
+                $transactionLevelAtHold = $db->transactionLevel();
                 $holding->push(true);
                 $release->pop();
                 Coroutine::sleep(0.5);
@@ -68,7 +70,10 @@ final class MysqlPoolExhaustionTest extends IntegrationTestCase
                 $db->commit();
                 $open = false;
 
-                return 'committed';
+                return [
+                    'status' => 'committed',
+                    'transactionLevelAtHold' => $transactionLevelAtHold,
+                ];
             } finally {
                 if ($open) {
                     try {
@@ -97,7 +102,8 @@ final class MysqlPoolExhaustionTest extends IntegrationTestCase
 
         $results = $parallel->wait();
 
-        $this->assertSame('committed', $results['a']);
+        $this->assertSame('committed', $results['a']['status']);
+        $this->assertGreaterThanOrEqual(1, $results['a']['transactionLevelAtHold']);
         $this->assertInstanceOf(RuntimeException::class, $results['b']);
         $this->assertSame(self::EXHAUSTED, $results['b']->getMessage());
         $this->assertProductionPoolFileUnchanged();

@@ -84,8 +84,27 @@ class DrainOutboxTest extends TestCase
             ->execute($now);
 
         $this->assertSame(1, $result->done);
+        $this->assertSame(1, $outbox->peakInClaim);
         $this->assertSame(0, $notifier->notifyWhileClaiming);
         $this->assertCount(1, $notifier->notified);
+        $this->assertFalse($outbox->inClaim);
+    }
+
+    /** POOL-04: empty claim does not call notify. */
+    public function testEmptyClaimDoesNotNotify(): void
+    {
+        $outbox = new FakeOutbox();
+        $notifier = new FakeTransferNotifier();
+        $notifier->outbox = $outbox;
+
+        $result = (new DrainOutbox($outbox, $notifier, new NullLogger(), 8, 10, 300))
+            ->execute(new DateTimeImmutable('2026-08-08T12:00:00+00:00'));
+
+        $this->assertSame(0, $result->processed);
+        $this->assertSame(0, $result->done);
+        $this->assertSame([], $notifier->notified);
+        $this->assertSame(0, $notifier->notifyWhileClaiming);
+        $this->assertSame(1, $outbox->peakInClaim);
         $this->assertFalse($outbox->inClaim);
     }
 

@@ -27,12 +27,17 @@ final class FakeTransactionRunner implements TransactionRunner
 
     public bool $inRun = false;
 
+    public int $peakInRun = 0;
+
     public ?Throwable $thrown = null;
 
     public function run(callable $operation): mixed
     {
         ++$this->runs;
         $this->inRun = true;
+        if ($this->inRun) {
+            $this->peakInRun = 1;
+        }
 
         try {
             return $operation();
