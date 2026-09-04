@@ -61,6 +61,34 @@ class DrainOutboxTest extends TestCase
         $this->assertSame(2550, $notifier->notified[0]->amount->cents());
     }
 
+    /** POOL-04: notify is not invoked while Outbox::claimDue is still claiming. */
+    public function testItDoesNotNotifyWhileTheClaimTransactionIsOpen(): void
+    {
+        $outbox = new FakeOutbox();
+        $notifier = new FakeTransferNotifier();
+        $notifier->outbox = $outbox;
+        $now = new DateTimeImmutable('2026-08-08T12:00:00+00:00');
+        $outbox->enqueue(
+            OutboxEventType::TransferCompleted->value,
+            42,
+            [
+                'transfer_id' => 42,
+                'payer_wallet_id' => 11,
+                'payee_wallet_id' => 22,
+                'amount_cents' => 2550,
+            ],
+            $now,
+        );
+
+        $result = (new DrainOutbox($outbox, $notifier, new NullLogger(), 8, 10, 300))
+            ->execute($now);
+
+        $this->assertSame(1, $result->done);
+        $this->assertSame(0, $notifier->notifyWhileClaiming);
+        $this->assertCount(1, $notifier->notified);
+        $this->assertFalse($outbox->inClaim);
+    }
+
     public function testNotifyFailureRetriesWithBackoff(): void
     {
         $outbox = new FakeOutbox();

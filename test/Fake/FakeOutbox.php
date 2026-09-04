@@ -36,6 +36,8 @@ final class FakeOutbox implements Outbox
 
     public int $claimLeaseSeconds = 60;
 
+    public bool $inClaim = false;
+
     private int $nextId = 1;
 
     public function enqueue(
@@ -69,28 +71,34 @@ final class FakeOutbox implements Outbox
 
     public function claimDue(int $limit, DateTimeImmutable $now): array
     {
-        $claimed = [];
-        $leaseCutoff = $now->modify(sprintf('-%d seconds', $this->claimLeaseSeconds));
+        $this->inClaim = true;
 
-        foreach ($this->messages as $index => $message) {
-            if (count($claimed) >= $limit) {
-                break;
+        try {
+            $claimed = [];
+            $leaseCutoff = $now->modify(sprintf('-%d seconds', $this->claimLeaseSeconds));
+
+            foreach ($this->messages as $index => $message) {
+                if (count($claimed) >= $limit) {
+                    break;
+                }
+
+                $duePending = $message['status'] === 'pending' && $message['available_at'] <= $now;
+                $staleProcessing = $message['status'] === 'processing' && $message['updated_at'] <= $leaseCutoff;
+
+                if (! $duePending && ! $staleProcessing) {
+                    continue;
+                }
+
+                $this->messages[$index]['status'] = 'processing';
+                $this->messages[$index]['updated_at'] = $now;
+
+                $claimed[] = $this->toMessage($this->messages[$index]);
             }
 
-            $duePending = $message['status'] === 'pending' && $message['available_at'] <= $now;
-            $staleProcessing = $message['status'] === 'processing' && $message['updated_at'] <= $leaseCutoff;
-
-            if (! $duePending && ! $staleProcessing) {
-                continue;
-            }
-
-            $this->messages[$index]['status'] = 'processing';
-            $this->messages[$index]['updated_at'] = $now;
-
-            $claimed[] = $this->toMessage($this->messages[$index]);
+            return $claimed;
+        } finally {
+            $this->inClaim = false;
         }
-
-        return $claimed;
     }
 
     public function markDone(int $id): void

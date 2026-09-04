@@ -275,6 +275,34 @@ class TransferFundsTest extends TestCase
         $this->assertSame(2550, $this->authorizer->authorized[0]->amount->cents());
     }
 
+    /** POOL-03: authorize is not invoked while TransactionRunner::run is executing. */
+    public function testItDoesNotAuthorizeWhileTheMoneyTransactionIsRunning(): void
+    {
+        $this->authorizer->transactionRunner = $this->runner;
+
+        $result = $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(2550)));
+
+        $this->assertSame(201, $result->statusCode);
+        $this->assertSame(0, $this->authorizer->authorizeWhileInRun);
+        $this->assertSame(1, $this->runner->runs);
+        $this->assertCount(1, $this->authorizer->authorized);
+        $this->assertFalse($this->runner->inRun);
+    }
+
+    /** POOL-03: decline never enters the money txn and authorize is still outside run. */
+    public function testItDoesNotAuthorizeInsideAMoneyTransactionOnDecline(): void
+    {
+        $this->authorizer->transactionRunner = $this->runner;
+        $this->authorizer->authorizes = false;
+
+        $this->executeExpecting(TransferUnauthorized::class, new TransferFundsInput(1, 2, Money::fromCents(2550)));
+
+        $this->assertSame(0, $this->authorizer->authorizeWhileInRun);
+        $this->assertSame(0, $this->runner->runs);
+        $this->assertCount(1, $this->authorizer->authorized);
+        $this->assertFalse($this->runner->inRun);
+    }
+
     public function testItEnqueuesTransferCompletedOnceWithFrozenPayload(): void
     {
         $this->transferFunds->execute(new TransferFundsInput(1, 2, Money::fromCents(2550)));

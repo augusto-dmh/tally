@@ -17,6 +17,7 @@ use App\Domain\Exception\NotificationFailed;
 use App\Domain\Exception\TransferUnauthorized;
 use App\Exception\Handler\DomainExceptionHandler;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 /**
  * CONC-04 handler contract: NotificationFailed is swallowed after commit in
@@ -44,5 +45,29 @@ final class DomainExceptionHandlerTest extends TestCase
 
         $this->assertTrue($handler->isValid(new TransferUnauthorized('declined')));
         $this->assertTrue($handler->isValid(new InsufficientBalance('short')));
+    }
+
+    /** POOL-06: Hyperf pool-exhausted RuntimeException is unmapped infrastructure. */
+    public function testPoolExhaustedRuntimeExceptionIsNotAMappedDomainOutcome(): void
+    {
+        $handler = new DomainExceptionHandler();
+
+        $this->assertFalse(
+            $handler->isValid(new RuntimeException(
+                'Connection pool exhausted. Cannot establish new connection before wait_timeout.'
+            )),
+            'Pool exhaustion must not map to a domain HTTP outcome (including transfer_unauthorized).'
+        );
+    }
+
+    /** POOL-06: DomainExceptionHandler gains no new pool-exhaustion slug. */
+    public function testOutcomesHasNoPoolExhaustionSlug(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 3) . '/app/Exception/Handler/DomainExceptionHandler.php');
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('pool_exhausted', $source);
+        $this->assertStringNotContainsString('connection_pool', $source);
+        $this->assertStringNotContainsString('pool_exhaustion', $source);
+        $this->assertStringContainsString("'transfer_unauthorized'", $source);
     }
 }
